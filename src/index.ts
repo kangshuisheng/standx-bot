@@ -197,18 +197,27 @@ async function main() {
     });
 
     bot.callbackQuery("start", async (ctx) => {
+      // 先响应 Telegram，再执行操作（防止超时）
       await ctx.answerCallbackQuery("正在启动...");
-      await startStrategy();
+      // 异步执行，不阻塞
+      startStrategy().catch(e => logger.error("Start failed:", e));
     });
 
     bot.callbackQuery("stop", async (ctx) => {
+      // 先响应 Telegram，再执行操作（防止超时）
       await ctx.answerCallbackQuery("正在停止...");
-      await stopStrategy();
+      // 异步执行，不阻塞
+      stopStrategy().catch(e => logger.error("Stop failed:", e));
     });
 
     bot.callbackQuery("status", async (ctx) => {
       await ctx.answerCallbackQuery();
       await ctx.reply(getStatusText(), { parse_mode: "HTML" });
+    });
+
+    // 捕获所有错误，防止崩溃
+    bot.catch((err) => {
+      logger.error("Telegram Bot error:", err);
     });
 
     // 启动 Bot
