@@ -25,39 +25,17 @@ const marketMakerStrategy = new MarketMakerStrategy(
 let isRunning = false;
 let isExecuting = false; // 防止循环执行时被打断
 let intervalId: ReturnType<typeof setInterval> | null = null;
+let statusIntervalId: ReturnType<typeof setInterval> | null = null;
 let cycleCount = 0;
 let lastError: string | null = null;
 
-// Telegram Bot
+// Telegram Bot（仅发送通知，不做 polling，避免 token 冲突）
 const bot = config.TELEGRAM_BOT_TOKEN
   ? new Bot(config.TELEGRAM_BOT_TOKEN)
   : null;
 
-// 防止同一进程内重复启动 long polling（例如重复 import / 多次调用 main）
-const TELEGRAM_POLLING_STARTED_KEY = "__standx_telegram_polling_started__";
-async function startTelegramPollingOnce() {
-  if (!bot) return;
-  const g = globalThis as any;
-  if (g[TELEGRAM_POLLING_STARTED_KEY]) {
-    logger.warn("Telegram polling already started; skipping bot.start()");
-    return;
-  }
-  g[TELEGRAM_POLLING_STARTED_KEY] = true;
-  try {
-    await bot.start();
-  } catch (err: any) {
-    // 409: another long-polling instance is already connected with this token
-    if (err?.description?.includes("Conflict") || err?.error_code === 409) {
-      logger.error(
-        "Telegram 409 Conflict: another instance is long-polling with the same bot token. Stop the other process or rotate the token."
-      );
-    }
-    throw err;
-  }
-}
-
 // 发送 Telegram 消息
-async function sendTelegramMessage(text: string, showButtons = true) {
+async function sendTelegramMessage(text: string, showButtons = false) {
   if (!bot || !config.TELEGRAM_CHAT_ID) return;
 
   try {
@@ -137,6 +115,11 @@ async function stopStrategy() {
     intervalId = null;
   }
 
+  if (statusIntervalId) {
+    clearInterval(statusIntervalId);
+    statusIntervalId = null;
+  }
+
   // 等待当前执行完成
   while (isExecuting) {
     logger.info("Waiting for current cycle to finish...");
@@ -204,59 +187,22 @@ async function main() {
     await cleanup();
   });
 
-  // 设置 Telegram Bot 命令处理（Polling 模式）
+  // 仅发送通知（无 polling），避免 token 冲突；启动时提示，并每小时播报一次状态
   if (bot) {
-    bot.command("start", async (ctx) => {
-      await ctx.reply(getStatusText(), {
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard()
-          .text(isRunning ? "🔴 停止" : "🟢 启动", isRunning ? "stop" : "start")
-          .text("📊 状态", "status"),
-      });
-    });
+    await sendTelegramMessage("✅ <b>机器人已启动</b>\n\n策略已自动运行。", false);
 
-    bot.command("status", async (ctx) => {
-      await ctx.reply(getStatusText(), { parse_mode: "HTML" });
-    });
-
-    bot.callbackQuery("start", async (ctx) => {
-      // 先响应 Telegram，再执行操作（防止超时）
-      await ctx.answerCallbackQuery("正在启动...");
-      // 异步执行，不阻塞
-      startStrategy().catch((e) => logger.error("Start failed:", e));
-    });
-
-    bot.callbackQuery("stop", async (ctx) => {
-      // 先响应 Telegram，再执行操作（防止超时）
-      await ctx.answerCallbackQuery("正在停止...");
-      // 异步执行，不阻塞
-      stopStrategy().catch((e) => logger.error("Stop failed:", e));
-    });
-
-    bot.callbackQuery("status", async (ctx) => {
-      await ctx.answerCallbackQuery();
-      await ctx.reply(getStatusText(), { parse_mode: "HTML" });
-    });
-
-    // 捕获所有错误，防止崩溃
-    bot.catch((err) => {
-      logger.error("Telegram Bot error:", err);
-    });
-
-    // 启动 Bot（显式 await，捕获 409 冲突）
-    await startTelegramPollingOnce();
-    logger.info("🤖 Telegram Bot started!");
-
-    // 不自动启动策略：交给外部按钮/命令控制
-    await sendTelegramMessage(
-      "✅ <b>机器人已上线</b>\n\n通过下方按钮控制启动/停止。",
-      true
-    );
+    // 每小时发送一次状态播报
+    statusIntervalId = setInterval(() => {
+      sendTelegramMessage(getStatusText(), false).catch((e) =>
+        logger.error("Failed to send hourly status:", e)
+      );
+    }, 60 * 60 * 1000);
   } else {
     logger.warn("⚠️ Telegram Bot not configured. Running in standalone mode.");
-    // 没有 Telegram 时也自动启动策略
-    await startStrategy();
   }
+
+  // 直接启动策略
+  await startStrategy();
 }
 
 main().catch((err) => {
