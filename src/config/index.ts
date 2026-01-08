@@ -33,8 +33,8 @@ const env = {
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
   CHAIN: process.env.CHAIN,
   SYMBOL: process.env.TRADING_PAIR || process.env.SYMBOL || "BTC-USD",
-  SPREAD: process.env.SPREAD || "0.001",
-  ORDER_SIZE_USD: process.env.ORDER_SIZE_USD || process.env.ORDER_SIZE || "10",
+  SPREAD: process.env.SPREAD || "0.002",
+  ORDER_SIZE_USD: process.env.ORDER_SIZE_USD || process.env.ORDER_SIZE || "100",
   MAX_INVENTORY_USD:
     process.env.MAX_INVENTORY_USD || process.env.MAX_POSITION || "300",
   EXECUTION_INTERVAL: process.env.EXECUTION_INTERVAL

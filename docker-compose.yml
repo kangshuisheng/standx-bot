@@ -7,7 +7,7 @@ services:
       - .env
     # 如果需要暴露控制端口（可选）
     ports:
-      - "3011:3011"
+      - "3000:3000"
     logging:
       driver: "json-file"
       options:
