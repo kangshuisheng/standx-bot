@@ -33,6 +33,19 @@ const bot = config.TELEGRAM_BOT_TOKEN
   ? new Bot(config.TELEGRAM_BOT_TOKEN)
   : null;
 
+// 防止同一进程内重复启动 long polling（例如重复 import / 多次调用 main）
+const TELEGRAM_POLLING_STARTED_KEY = "__standx_telegram_polling_started__";
+function startTelegramPollingOnce() {
+  if (!bot) return;
+  const g = globalThis as any;
+  if (g[TELEGRAM_POLLING_STARTED_KEY]) {
+    logger.warn("Telegram polling already started; skipping bot.start()");
+    return;
+  }
+  g[TELEGRAM_POLLING_STARTED_KEY] = true;
+  bot.start();
+}
+
 // 发送 Telegram 消息
 async function sendTelegramMessage(text: string, showButtons = true) {
   if (!bot || !config.TELEGRAM_CHAT_ID) return;
@@ -181,7 +194,7 @@ async function main() {
     await cleanup();
   });
 
-  // 设置 Telegram Bot 命令处理
+  // 设置 Telegram Bot 命令处理（Polling 模式）
   if (bot) {
     bot.command("start", async (ctx) => {
       await ctx.reply(getStatusText(), {
@@ -200,14 +213,14 @@ async function main() {
       // 先响应 Telegram，再执行操作（防止超时）
       await ctx.answerCallbackQuery("正在启动...");
       // 异步执行，不阻塞
-      startStrategy().catch(e => logger.error("Start failed:", e));
+      startStrategy().catch((e) => logger.error("Start failed:", e));
     });
 
     bot.callbackQuery("stop", async (ctx) => {
       // 先响应 Telegram，再执行操作（防止超时）
       await ctx.answerCallbackQuery("正在停止...");
       // 异步执行，不阻塞
-      stopStrategy().catch(e => logger.error("Stop failed:", e));
+      stopStrategy().catch((e) => logger.error("Stop failed:", e));
     });
 
     bot.callbackQuery("status", async (ctx) => {
@@ -221,11 +234,14 @@ async function main() {
     });
 
     // 启动 Bot
-    bot.start();
+    startTelegramPollingOnce();
     logger.info("🤖 Telegram Bot started!");
 
-    // 自动启动策略 + 发送通知
-    await startStrategy();
+    // 不自动启动策略：交给外部按钮/命令控制
+    await sendTelegramMessage(
+      "✅ <b>机器人已上线</b>\n\n通过下方按钮控制启动/停止。",
+      true
+    );
   } else {
     logger.warn("⚠️ Telegram Bot not configured. Running in standalone mode.");
     // 没有 Telegram 时也自动启动策略
