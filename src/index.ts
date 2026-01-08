@@ -35,7 +35,7 @@ const bot = config.TELEGRAM_BOT_TOKEN
 
 // 防止同一进程内重复启动 long polling（例如重复 import / 多次调用 main）
 const TELEGRAM_POLLING_STARTED_KEY = "__standx_telegram_polling_started__";
-function startTelegramPollingOnce() {
+async function startTelegramPollingOnce() {
   if (!bot) return;
   const g = globalThis as any;
   if (g[TELEGRAM_POLLING_STARTED_KEY]) {
@@ -43,7 +43,17 @@ function startTelegramPollingOnce() {
     return;
   }
   g[TELEGRAM_POLLING_STARTED_KEY] = true;
-  bot.start();
+  try {
+    await bot.start();
+  } catch (err: any) {
+    // 409: another long-polling instance is already connected with this token
+    if (err?.description?.includes("Conflict") || err?.error_code === 409) {
+      logger.error(
+        "Telegram 409 Conflict: another instance is long-polling with the same bot token. Stop the other process or rotate the token."
+      );
+    }
+    throw err;
+  }
 }
 
 // 发送 Telegram 消息
@@ -233,8 +243,8 @@ async function main() {
       logger.error("Telegram Bot error:", err);
     });
 
-    // 启动 Bot
-    startTelegramPollingOnce();
+    // 启动 Bot（显式 await，捕获 409 冲突）
+    await startTelegramPollingOnce();
     logger.info("🤖 Telegram Bot started!");
 
     // 不自动启动策略：交给外部按钮/命令控制
