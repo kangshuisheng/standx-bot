@@ -202,6 +202,8 @@ export class StandXClient {
       headers: {
         "Content-Type": "application/json",
       },
+      // 防止请求无限挂起导致策略循环卡死
+      timeout: 15000,
     });
 
     // 添加请求拦截器，自动添加认证头
