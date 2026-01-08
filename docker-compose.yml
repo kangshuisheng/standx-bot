@@ -1,0 +1,15 @@
+services:
+  standx-bot:
+    build: .
+    container_name: standx-liquidity-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    # 如果需要暴露控制端口（可选）
+    # ports:
+    #   - "3001:3001"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
