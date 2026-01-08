@@ -6,19 +6,19 @@ import { base58 } from "@scure/base";
 import axios from "axios";
 
 // api 路由
-const SIGN_API_URL = "http://localhost:3000/api/sign";
+const SIGN_API_URL = "http://localhost:3011/api/sign";
 
 // 1. 生成临时的 Ed25519 密钥对 (Bot Session Key)
 // 我们需要将这个 Key 保存并输出给用户，因为 Bot 需要用它来签名请求
 const privateKey = ed25519.utils.randomSecretKey();
-const sessionPrivateKeyHex = Buffer.from(privateKey).toString('hex');
+const sessionPrivateKeyHex = Buffer.from(privateKey).toString("hex");
 const publicKey = ed25519.getPublicKey(privateKey);
 const requestId = base58.encode(publicKey); // Step 1: requestId (Public Key)
 
 console.log("\n==================================================");
 console.log("   STANDX BOT - MANUAL LOGIN WIZARD (NO PRIVATE KEY)");
 console.log("==================================================");
-console.log("1. Open http://localhost:3000 in your browser.");
+console.log("1. Open http://localhost:3011 in your browser.");
 console.log("2. Connect your Binance Web3 Wallet (via WalletConnect).");
 console.log("3. Click 'Sign Login Message'.");
 console.log("4. The bot will automatically capture the token.");
@@ -33,7 +33,7 @@ let signDataState: {
 const CHAIN = "bsc";
 
 const server = serve({
-  port: 3000,
+  port: 3011,
   async fetch(req) {
     const url = new URL(req.url);
 
@@ -145,7 +145,7 @@ const server = serve({
             const metadata = {
                 name: 'StandX Bot',
                 description: 'Login StandX Bot',
-                url: 'http://localhost:3000',
+                url: 'http://localhost:3011',
                 icons: ['https://avatars.githubusercontent.com/u/37784886']
             }
 

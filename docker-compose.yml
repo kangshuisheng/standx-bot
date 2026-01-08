@@ -6,8 +6,8 @@ services:
     env_file:
       - .env
     # 如果需要暴露控制端口（可选）
-    # ports:
-    #   - "3001:3001"
+    ports:
+      - "3011:3011"
     logging:
       driver: "json-file"
       options:
