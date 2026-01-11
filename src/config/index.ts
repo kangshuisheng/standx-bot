@@ -42,9 +42,9 @@ const env = {
   CHAIN: process.env.CHAIN,
   SYMBOL: process.env.TRADING_PAIR || process.env.SYMBOL || "BTC-USD",
   SPREAD: process.env.SPREAD || "0.002",
-  ORDER_SIZE_USD: process.env.ORDER_SIZE_USD || process.env.ORDER_SIZE || "100",
+  ORDER_SIZE_USD: process.env.ORDER_SIZE_USD || process.env.ORDER_SIZE || "600",
   MAX_INVENTORY_USD:
-    process.env.MAX_INVENTORY_USD || process.env.MAX_POSITION || "300",
+    process.env.MAX_INVENTORY_USD || process.env.MAX_POSITION || "1000",
   ORDERS_TIER1: process.env.ORDERS_TIER1
     ? parseInt(process.env.ORDERS_TIER1)
     : 1,
