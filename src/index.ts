@@ -18,7 +18,10 @@ const marketMakerStrategy = new MarketMakerStrategy(
   config.SYMBOL,
   config.SPREAD,
   config.ORDER_SIZE_USD,
-  config.MAX_INVENTORY_USD
+  config.MAX_INVENTORY_USD,
+  config.ORDERS_TIER1,
+  config.ORDERS_TIER2,
+  config.ORDERS_TIER3
 );
 
 // 全局状态
@@ -177,6 +180,8 @@ async function main() {
   logger.info(
     `Spread: ${config.SPREAD} (${config.SPREAD.times(100).toFixed(2)}%)`
   );
+  const totalOrders = (config.ORDERS_TIER1 + config.ORDERS_TIER2 + config.ORDERS_TIER3) * 2;
+  logger.info(`Order Distribution: Tier1=${config.ORDERS_TIER1}, Tier2=${config.ORDERS_TIER2}, Tier3=${config.ORDERS_TIER3} (Total: ${totalOrders} orders)`);
 
   // 监听退出信号
   process.on("SIGINT", cleanup);

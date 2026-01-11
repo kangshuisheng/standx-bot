@@ -6,17 +6,26 @@ import { Logger } from "../utils/logger";
 export class MarketMakerStrategy extends BaseStrategy {
   private client: StandXClient;
   private logger: Logger;
+  private ordersTier1: number; // 0-10 bps (100% 积分)
+  private ordersTier2: number; // 10-30 bps (50% 积分)
+  private ordersTier3: number; // 30 bps-1% (10% 积分)
 
   constructor(
     client: StandXClient,
     tradingPair: string,
     spread: Decimal,
     orderSize: Decimal,
-    maxPosition: Decimal
+    maxPosition: Decimal,
+    ordersTier1: number = 3,
+    ordersTier2: number = 2,
+    ordersTier3: number = 1
   ) {
     super(tradingPair, spread, orderSize, maxPosition);
     this.client = client;
     this.logger = new Logger();
+    this.ordersTier1 = ordersTier1;
+    this.ordersTier2 = ordersTier2;
+    this.ordersTier3 = ordersTier3;
   }
 
   public async initialize(): Promise<void> {
@@ -92,38 +101,111 @@ export class MarketMakerStrategy extends BaseStrategy {
         return; // 这个周期不挂新单，等下个周期确认仓位已平
       }
 
-      // 4. Calculate Target Prices
-      const { buyPrice, sellPrice } = await this.calculatePrices(midPrice);
+      // 4. 按照 StandX 官方积分档位分配订单（每个档位挂在边缘，最大化积分，最小化成交风险）
+      // Tier 1: 0-10 bps → 100% 积分 → 挂在 ~9 bps（接近边缘但仍在100%区）
+      // Tier 2: 10-30 bps → 50% 积分 → 挂在 ~28 bps（接近边缘但仍在50%区）
+      // Tier 3: 30 bps-1% → 10% 积分 → 挂在 ~95 bps（接近边缘但仍在10%区）
 
-      // 5. Convert USD order size to BTC quantity
       const MIN_QTY = new Decimal("0.001");
+      const totalOrders =
+        this.ordersTier1 + this.ordersTier2 + this.ordersTier3;
 
-      let buyQty = this.orderSize
-        .dividedBy(buyPrice)
-        .toDecimalPlaces(3, Decimal.ROUND_DOWN);
-      let sellQty = this.orderSize
-        .dividedBy(sellPrice)
+      // 每个订单的数量（总量平分）
+      const qtyPerOrder = this.orderSize
+        .dividedBy(midPrice)
+        .dividedBy(totalOrders)
         .toDecimalPlaces(3, Decimal.ROUND_DOWN);
 
-      if (buyQty.lessThan(MIN_QTY)) buyQty = MIN_QTY;
-      if (sellQty.lessThan(MIN_QTY)) sellQty = MIN_QTY;
+      const actualQty = qtyPerOrder.lessThan(MIN_QTY) ? MIN_QTY : qtyPerOrder;
 
       this.logger.info(
-        `Order Size: ${buyQty} BTC (~${buyQty.times(midPrice).toFixed(2)} USD)`
+        `Tier-based orders: T1=${this.ordersTier1}, T2=${
+          this.ordersTier2
+        }, T3=${this.ordersTier3}, ${actualQty} BTC per order (~${actualQty
+          .times(midPrice)
+          .toFixed(2)} USD)`
       );
 
-      // 6. Place new maker orders
+      const orders: Array<{
+        side: "buy" | "sell";
+        price: Decimal;
+        qty: Decimal;
+        tier: number;
+      }> = [];
+
+      // Tier 1: 100% 积分区，挂在 ~9 bps (0.09%)，最远但仍在 0-10 bps 内
+      if (this.ordersTier1 > 0) {
+        const tier1Offset = new Decimal("0.0009"); // 9 bps = 0.09%
+        for (let i = 0; i < this.ordersTier1; i++) {
+          const buyPrice = midPrice.times(new Decimal(1).minus(tier1Offset));
+          const sellPrice = midPrice.times(new Decimal(1).plus(tier1Offset));
+          orders.push({
+            side: "buy",
+            price: buyPrice,
+            qty: actualQty,
+            tier: 1,
+          });
+          orders.push({
+            side: "sell",
+            price: sellPrice,
+            qty: actualQty,
+            tier: 1,
+          });
+        }
+      }
+
+      // Tier 2: 50% 积分区，挂在 ~28 bps (0.28%)，最远但仍在 10-30 bps 内
+      if (this.ordersTier2 > 0) {
+        const tier2Offset = new Decimal("0.0028"); // 28 bps = 0.28%
+        for (let i = 0; i < this.ordersTier2; i++) {
+          const buyPrice = midPrice.times(new Decimal(1).minus(tier2Offset));
+          const sellPrice = midPrice.times(new Decimal(1).plus(tier2Offset));
+          orders.push({
+            side: "buy",
+            price: buyPrice,
+            qty: actualQty,
+            tier: 2,
+          });
+          orders.push({
+            side: "sell",
+            price: sellPrice,
+            qty: actualQty,
+            tier: 2,
+          });
+        }
+      }
+
+      // Tier 3: 10% 积分区，挂在 ~95 bps (0.95%)，最远但仍在 30 bps-1% 内
+      if (this.ordersTier3 > 0) {
+        const tier3Offset = new Decimal("0.0095"); // 95 bps = 0.95%
+        for (let i = 0; i < this.ordersTier3; i++) {
+          const buyPrice = midPrice.times(new Decimal(1).minus(tier3Offset));
+          const sellPrice = midPrice.times(new Decimal(1).plus(tier3Offset));
+          orders.push({
+            side: "buy",
+            price: buyPrice,
+            qty: actualQty,
+            tier: 3,
+          });
+          orders.push({
+            side: "sell",
+            price: sellPrice,
+            qty: actualQty,
+            tier: 3,
+          });
+        }
+      }
+
       this.logger.info(
-        `Placing BUY at ${buyPrice.toFixed(2)}, SELL at ${sellPrice.toFixed(2)}`
+        `Placing ${orders.length} orders across 3 point tiers (100%/50%/10%)`
       );
 
-      await this.client.placeOrder(this.tradingPair, "buy", buyPrice, buyQty);
-      await this.client.placeOrder(
-        this.tradingPair,
-        "sell",
-        sellPrice,
-        sellQty
+      // 5. 并发下单
+      const orderPromises = orders.map((o) =>
+        this.client.placeOrder(this.tradingPair, o.side, o.price, o.qty)
       );
+
+      await Promise.all(orderPromises);
 
       this.logger.info("✅ Strategy cycle completed.");
     } catch (e: any) {
