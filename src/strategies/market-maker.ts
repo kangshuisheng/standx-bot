@@ -133,12 +133,22 @@ export class MarketMakerStrategy extends BaseStrategy {
         tier: number;
       }> = [];
 
-      // Tier 1: 100% 积分区，挂在 ~9 bps (0.09%)，最远但仍在 0-10 bps 内
+      // Tier 1: 100% 积分区，在 7-9 bps 之间分散（最远但仍在 0-10 bps 内）
       if (this.ordersTier1 > 0) {
-        const tier1Offset = new Decimal("0.0009"); // 9 bps = 0.09%
+        const tier1Start = new Decimal("0.0007"); // 7 bps
+        const tier1End = new Decimal("0.0009"); // 9 bps
+        const tier1Step =
+          this.ordersTier1 > 1
+            ? tier1End.minus(tier1Start).dividedBy(this.ordersTier1 - 1)
+            : new Decimal(0);
+
         for (let i = 0; i < this.ordersTier1; i++) {
-          const buyPrice = midPrice.times(new Decimal(1).minus(tier1Offset));
-          const sellPrice = midPrice.times(new Decimal(1).plus(tier1Offset));
+          const offset =
+            this.ordersTier1 > 1
+              ? tier1Start.plus(tier1Step.times(i))
+              : tier1End;
+          const buyPrice = midPrice.times(new Decimal(1).minus(offset));
+          const sellPrice = midPrice.times(new Decimal(1).plus(offset));
           orders.push({
             side: "buy",
             price: buyPrice,
@@ -154,12 +164,22 @@ export class MarketMakerStrategy extends BaseStrategy {
         }
       }
 
-      // Tier 2: 50% 积分区，挂在 ~28 bps (0.28%)，最远但仍在 10-30 bps 内
+      // Tier 2: 50% 积分区，在 15-28 bps 之间分散
       if (this.ordersTier2 > 0) {
-        const tier2Offset = new Decimal("0.0028"); // 28 bps = 0.28%
+        const tier2Start = new Decimal("0.0015"); // 15 bps
+        const tier2End = new Decimal("0.0028"); // 28 bps
+        const tier2Step =
+          this.ordersTier2 > 1
+            ? tier2End.minus(tier2Start).dividedBy(this.ordersTier2 - 1)
+            : new Decimal(0);
+
         for (let i = 0; i < this.ordersTier2; i++) {
-          const buyPrice = midPrice.times(new Decimal(1).minus(tier2Offset));
-          const sellPrice = midPrice.times(new Decimal(1).plus(tier2Offset));
+          const offset =
+            this.ordersTier2 > 1
+              ? tier2Start.plus(tier2Step.times(i))
+              : tier2End;
+          const buyPrice = midPrice.times(new Decimal(1).minus(offset));
+          const sellPrice = midPrice.times(new Decimal(1).plus(offset));
           orders.push({
             side: "buy",
             price: buyPrice,
@@ -175,12 +195,22 @@ export class MarketMakerStrategy extends BaseStrategy {
         }
       }
 
-      // Tier 3: 10% 积分区，挂在 ~95 bps (0.95%)，最远但仍在 30 bps-1% 内
+      // Tier 3: 10% 积分区，在 40-95 bps 之间分散
       if (this.ordersTier3 > 0) {
-        const tier3Offset = new Decimal("0.0095"); // 95 bps = 0.95%
+        const tier3Start = new Decimal("0.0040"); // 40 bps
+        const tier3End = new Decimal("0.0095"); // 95 bps
+        const tier3Step =
+          this.ordersTier3 > 1
+            ? tier3End.minus(tier3Start).dividedBy(this.ordersTier3 - 1)
+            : new Decimal(0);
+
         for (let i = 0; i < this.ordersTier3; i++) {
-          const buyPrice = midPrice.times(new Decimal(1).minus(tier3Offset));
-          const sellPrice = midPrice.times(new Decimal(1).plus(tier3Offset));
+          const offset =
+            this.ordersTier3 > 1
+              ? tier3Start.plus(tier3Step.times(i))
+              : tier3End;
+          const buyPrice = midPrice.times(new Decimal(1).minus(offset));
+          const sellPrice = midPrice.times(new Decimal(1).plus(offset));
           orders.push({
             side: "buy",
             price: buyPrice,
