@@ -383,20 +383,23 @@ export class StandXClient {
     symbol: string,
     side: "buy" | "sell",
     price: Decimal,
-    qty: Decimal
-  ): Promise<void> {
-    const payload = {
+    qty: Decimal,
+    options?: { time_in_force?: string; reduce_only?: boolean }
+  ): Promise<any> {
+    const payload: any = {
       symbol,
       side,
       order_type: "limit",
       qty: qty.toString(),
       price: price.toFixed(2), // Price should have 2 decimal places for BTC-USD
-      time_in_force: "gtc",
-      reduce_only: false,
+      time_in_force: options?.time_in_force || "gtc",
+      reduce_only: options?.reduce_only || false,
     };
+
     this.logger.info(`Sending order: ${JSON.stringify(payload)}`);
     try {
-      await this.sendRequest("/api/new_order", "POST", payload);
+      const data = await this.sendRequest("/api/new_order", "POST", payload);
+      return data;
     } catch (e: any) {
       this.logger.error(`Order failed. Response: ${JSON.stringify(e.response?.data)}`);
       throw e;

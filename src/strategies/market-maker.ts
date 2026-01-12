@@ -2,6 +2,7 @@ import { BaseStrategy } from "./base-strategy";
 import Decimal from "decimal.js";
 import { StandXClient } from "../services/standx-api";
 import { Logger } from "../utils/logger";
+import { config } from "../config";
 
 export class MarketMakerStrategy extends BaseStrategy {
   private client: StandXClient;
@@ -9,6 +10,7 @@ export class MarketMakerStrategy extends BaseStrategy {
   private ordersTier1: number; // 0-10 bps (100% 积分)
   private ordersTier2: number; // 10-30 bps (50% 积分)
   private ordersTier3: number; // 30 bps-1% (10% 积分)
+  private orderMeta: Map<number, { tier: number; createdAt: number; price: Decimal }> = new Map();
 
   constructor(
     client: StandXClient,
@@ -37,14 +39,7 @@ export class MarketMakerStrategy extends BaseStrategy {
   public async execute(): Promise<void> {
     this.logger.info("Executing Market Maker Strategy cycle...");
     try {
-      // 1. Cancel existing orders to clear the book for new quotes
-      try {
-        await this.client.cancelAllOrders(this.tradingPair);
-      } catch (e: any) {
-        this.logger.warn(`Failed to cancel orders: ${e.message || e}`);
-      }
-
-      // 2. Fetch Orderbook
+      // 1. Fetch Orderbook
       const ob = await this.client.getOrderbook(this.tradingPair);
 
       const bids = ob.bids || [];
@@ -63,7 +58,7 @@ export class MarketMakerStrategy extends BaseStrategy {
         `Market: ${midPrice.toFixed(2)} (Bid: ${bestBid}, Ask: ${bestAsk})`
       );
 
-      // 3. Get Current Position - 检查是否有持仓
+      // 2. Get Current Position - 检查是否有持仓
       const currentPos = await this.client.getPosition(this.tradingPair);
 
       // ⚠️ 关键安全逻辑：如果有持仓，先平掉！
@@ -82,7 +77,8 @@ export class MarketMakerStrategy extends BaseStrategy {
             this.tradingPair,
             "sell",
             bestBid,
-            absPos
+            absPos,
+            { reduce_only: true }
           );
         } else {
           // 有空仓，挂买单平仓（以 bestAsk 价格快速成交）
@@ -93,7 +89,8 @@ export class MarketMakerStrategy extends BaseStrategy {
             this.tradingPair,
             "buy",
             bestAsk,
-            absPos
+            absPos,
+            { reduce_only: true }
           );
         }
 
@@ -101,10 +98,54 @@ export class MarketMakerStrategy extends BaseStrategy {
         return; // 这个周期不挂新单，等下个周期确认仓位已平
       }
 
+      // 3. 选择性撤单：只撤销不在目标价位区间或已超 TTL 的订单
+      try {
+        const openOrders = await this.client.getOpenOrders(this.tradingPair);
+        const now = Date.now();
+        const toCancel: number[] = [];
+
+        for (const o of openOrders) {
+          const price = new Decimal(o.price);
+          const offset = price.minus(midPrice).abs().dividedBy(midPrice);
+
+          // 判断该挂单是否落在 0-10bps, 10-30bps 或 30bps-1% 区间
+          const inTier1 = offset.greaterThanOrEqualTo(0) && offset.lessThanOrEqualTo(new Decimal(0.001));
+          const inTier2 = offset.greaterThan(new Decimal(0.001)) && offset.lessThanOrEqualTo(new Decimal(0.003));
+          const inTier3 = offset.greaterThan(new Decimal(0.003)) && offset.lessThanOrEqualTo(new Decimal(0.01));
+
+          const id = o.id;
+
+          // If we have metadata for this order, check TTL
+          const meta = this.orderMeta.get(id);
+          if (meta) {
+            const tierTTL = meta.tier === 1 ? config.TIER1_TTL_SEC : meta.tier === 2 ? config.TIER2_TTL_SEC : config.TIER3_TTL_SEC;
+            if (now - meta.createdAt > tierTTL * 1000) {
+              toCancel.push(id);
+              continue;
+            }
+          }
+
+          // If the order is outside known tiers, cancel it
+          if (!inTier1 && !inTier2 && !inTier3) {
+            toCancel.push(id);
+            continue;
+          }
+
+          // Otherwise keep the order
+        }
+
+        if (toCancel.length > 0) {
+          this.logger.info(`Cancelling ${toCancel.length} outdated/out-of-band orders`);
+          await Promise.allSettled(toCancel.map((id) => this.client.cancelOrder(id)));
+        }
+      } catch (e: any) {
+        this.logger.warn(`Failed during selective cancel step: ${e.message || e}`);
+      }
+
       // 4. 按照 StandX 官方积分档位分配订单（每个档位挂在边缘，最大化积分，最小化成交风险）
-      // Tier 1: 0-10 bps → 100% 积分 → 挂在 ~9 bps（接近边缘但仍在100%区）
-      // Tier 2: 10-30 bps → 50% 积分 → 挂在 ~28 bps（接近边缘但仍在50%区）
-      // Tier 3: 30 bps-1% → 10% 积分 → 挂在 ~95 bps（接近边缘但仍在10%区）
+      // Tier 1: 0-10 bps → 100% 积分
+      // Tier 2: 10-30 bps → 50% 积分
+      // Tier 3: 30 bps-1% → 10% 积分
 
       const MIN_QTY = new Decimal("0.001");
       const totalOrders =
@@ -133,34 +174,37 @@ export class MarketMakerStrategy extends BaseStrategy {
         tier: number;
       }> = [];
 
-      // Tier 1: 100% 积分区，在 7-9 bps 之间分散（最远但仍在 0-10 bps 内）
+      // Tier 1: single order per side if configured
       if (this.ordersTier1 > 0) {
-        const tier1Start = new Decimal("0.0008"); // 8 bps
-        const tier1End = new Decimal("0.0009"); // 9 bps
-        const tier1Step =
-          this.ordersTier1 > 1
-            ? tier1End.minus(tier1Start).dividedBy(this.ordersTier1 - 1)
-            : new Decimal(0);
+        const useSingle = config.TIER1_SINGLE_ORDER;
+        const offsetBps = new Decimal(config.TIER1_OFFSET_BPS);
+        const offset = offsetBps.dividedBy(10000); // bps -> decimal
 
-        for (let i = 0; i < this.ordersTier1; i++) {
-          const offset =
-            this.ordersTier1 > 1
-              ? tier1Start.plus(tier1Step.times(i))
-              : tier1End;
+        if (useSingle) {
+          const aggregatedQty = actualQty.times(this.ordersTier1);
           const buyPrice = midPrice.times(new Decimal(1).minus(offset));
           const sellPrice = midPrice.times(new Decimal(1).plus(offset));
-          orders.push({
-            side: "buy",
-            price: buyPrice,
-            qty: actualQty,
-            tier: 1,
-          });
-          orders.push({
-            side: "sell",
-            price: sellPrice,
-            qty: actualQty,
-            tier: 1,
-          });
+
+          orders.push({ side: "buy", price: buyPrice, qty: aggregatedQty, tier: 1 });
+          orders.push({ side: "sell", price: sellPrice, qty: aggregatedQty, tier: 1 });
+        } else {
+          const tier1Start = new Decimal("0.0008"); // 8 bps
+          const tier1End = new Decimal("0.0009"); // 9 bps
+          const tier1Step =
+            this.ordersTier1 > 1
+              ? tier1End.minus(tier1Start).dividedBy(this.ordersTier1 - 1)
+              : new Decimal(0);
+
+          for (let i = 0; i < this.ordersTier1; i++) {
+            const off =
+              this.ordersTier1 > 1
+                ? tier1Start.plus(tier1Step.times(i))
+                : tier1End;
+            const buyPrice = midPrice.times(new Decimal(1).minus(off));
+            const sellPrice = midPrice.times(new Decimal(1).plus(off));
+            orders.push({ side: "buy", price: buyPrice, qty: actualQty, tier: 1 });
+            orders.push({ side: "sell", price: sellPrice, qty: actualQty, tier: 1 });
+          }
         }
       }
 
@@ -230,22 +274,49 @@ export class MarketMakerStrategy extends BaseStrategy {
         `Placing ${orders.length} orders across 3 point tiers (100%/50%/10%)`
       );
 
-      // 5. 并发下单（使用 allSettled 避免单个失败导致全部中断）
-      const orderResults = await Promise.allSettled(
-        orders.map((o) =>
-          this.client.placeOrder(this.tradingPair, o.side, o.price, o.qty)
-        )
-      );
-
-      // 统计下单结果
-      const succeeded = orderResults.filter((r) => r.status === "fulfilled").length;
-      const failed = orderResults.filter((r) => r.status === "rejected").length;
-
-      if (failed > 0) {
-        this.logger.warn(`⚠️ ${failed}/${orders.length} orders failed`);
+      // 5. 批次下单（使用 allSettled 避免单个失败导致全部中断）
+      const batchLimit = config.ORDER_RATE_LIMIT || 10;
+      const batches: Array<Array<{ side: "buy" | "sell"; price: Decimal; qty: Decimal; tier: number }>> = [];
+      for (let i = 0; i < orders.length; i += batchLimit) {
+        batches.push(orders.slice(i, i + batchLimit));
       }
 
-      this.logger.info(`✅ Strategy cycle completed. (${succeeded}/${orders.length} orders placed)`);
+      let placedCount = 0;
+      let failedCount = 0;
+
+      for (const batch of batches) {
+        const results = await Promise.allSettled(
+          batch.map((o) =>
+            this.client.placeOrder(this.tradingPair, o.side, o.price, o.qty)
+          )
+        );
+
+        // 保存成功下单的元信息
+        for (let i = 0; i < results.length; i++) {
+          const res = results[i];
+          const o = batch[i];
+          if (res.status === "fulfilled") {
+            placedCount++;
+            const data = (res as any).value;
+            const id = data?.result?.id || data?.result?.order_id || data?.order_id || data?.id;
+            if (id) {
+              this.orderMeta.set(id, { tier: o.tier, createdAt: Date.now(), price: o.price });
+            }
+          } else {
+            failedCount++;
+            this.logger.warn(`Order failed in batch: ${JSON.stringify(batch[i])} - ${JSON.stringify((res as any).reason?.response?.data || (res as any).reason?.message || (res as any).reason)}`);
+          }
+        }
+
+        // 小延迟以给 API 缓口
+        await new Promise((r) => setTimeout(r, 50));
+      }
+
+      if (failedCount > 0) {
+        this.logger.warn(`⚠️ ${failedCount}/${orders.length} orders failed`);
+      }
+
+      this.logger.info(`✅ Strategy cycle completed. (${placedCount}/${orders.length} orders placed)`);
     } catch (e: any) {
       this.logger.error(
         `Strategy cycle failed: ${e.message}`,

@@ -29,6 +29,14 @@ const configSchema = z.object({
   ORDERS_TIER1: z.number().default(1), // 在 100% 积分区挂单数（每侧）- 最近，保守
   ORDERS_TIER2: z.number().default(3), // 在 50% 积分区挂单数（每侧）- 较安全，多挂
   ORDERS_TIER3: z.number().default(3), // 在 10% 积分区挂单数（每侧）- 最安全，多挂
+  // 新增可配置项：Tier 行为与下单保护
+  TIER1_SINGLE_ORDER: z.boolean().default(true), // 是否在 Tier1 只挂单对 (买1/卖1)
+  TIER1_OFFSET_BPS: z.number().default(7), // Tier1 偏移（单位：bps），默认 7 bps (0.0007)
+  TIER1_TTL_SEC: z.number().default(5), // Tier1 订单停留时间（秒）
+  TIER2_TTL_SEC: z.number().default(25), // Tier2 TTL（秒）
+  TIER3_TTL_SEC: z.number().default(60), // Tier3 TTL（秒）
+  ORDER_RETRY_LIMIT: z.number().default(2), // 单笔下单重试次数
+  ORDER_RATE_LIMIT: z.number().default(10), // 每周期最大下单数（防护）
   EXECUTION_INTERVAL: z.number().default(5000),
 });
 
@@ -54,6 +62,27 @@ const env = {
   ORDERS_TIER3: process.env.ORDERS_TIER3
     ? parseInt(process.env.ORDERS_TIER3)
     : 3,
+  TIER1_SINGLE_ORDER: process.env.TIER1_SINGLE_ORDER
+    ? process.env.TIER1_SINGLE_ORDER.toLowerCase() === "true"
+    : true,
+  TIER1_OFFSET_BPS: process.env.TIER1_OFFSET_BPS
+    ? parseInt(process.env.TIER1_OFFSET_BPS)
+    : 7,
+  TIER1_TTL_SEC: process.env.TIER1_TTL_SEC
+    ? parseInt(process.env.TIER1_TTL_SEC)
+    : 5,
+  TIER2_TTL_SEC: process.env.TIER2_TTL_SEC
+    ? parseInt(process.env.TIER2_TTL_SEC)
+    : 25,
+  TIER3_TTL_SEC: process.env.TIER3_TTL_SEC
+    ? parseInt(process.env.TIER3_TTL_SEC)
+    : 60,
+  ORDER_RETRY_LIMIT: process.env.ORDER_RETRY_LIMIT
+    ? parseInt(process.env.ORDER_RETRY_LIMIT)
+    : 2,
+  ORDER_RATE_LIMIT: process.env.ORDER_RATE_LIMIT
+    ? parseInt(process.env.ORDER_RATE_LIMIT)
+    : 10,
   EXECUTION_INTERVAL: process.env.EXECUTION_INTERVAL
     ? parseInt(process.env.EXECUTION_INTERVAL)
     : 5000,
