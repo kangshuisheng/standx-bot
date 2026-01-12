@@ -98,7 +98,7 @@ export class MarketMakerStrategy extends BaseStrategy {
         return; // 这个周期不挂新单，等下个周期确认仓位已平
       }
 
-      // 3. 选择性撤单：只撤销不在目标价位区间或已超 TTL 的订单
+      // 3. 选择性撤单：使用 openOrders 的 created_at（若 meta 缺失），并按 TTL/区间撤单
       try {
         const openOrders = await this.client.getOpenOrders(this.tradingPair);
         const now = Date.now();
@@ -115,11 +115,22 @@ export class MarketMakerStrategy extends BaseStrategy {
 
           const id = o.id;
 
-          // If we have metadata for this order, check TTL
+          // Determine tier from price if possible
+          const orderTier = inTier1 ? 1 : inTier2 ? 2 : inTier3 ? 3 : 0;
+
+          // Determine createdAt (prefer metadata, fallback to API created_at)
           const meta = this.orderMeta.get(id);
+          let createdAtMs: number | undefined = undefined;
           if (meta) {
-            const tierTTL = meta.tier === 1 ? config.TIER1_TTL_SEC : meta.tier === 2 ? config.TIER2_TTL_SEC : config.TIER3_TTL_SEC;
-            if (now - meta.createdAt > tierTTL * 1000) {
+            createdAtMs = meta.createdAt;
+          } else if (o.created_at) {
+            createdAtMs = new Date(o.created_at).getTime();
+          }
+
+          // If we know tier and createdAt, check TTL
+          if (orderTier > 0 && createdAtMs) {
+            const tierTTL = orderTier === 1 ? config.TIER1_TTL_SEC : orderTier === 2 ? config.TIER2_TTL_SEC : config.TIER3_TTL_SEC;
+            if (now - createdAtMs > tierTTL * 1000) {
               toCancel.push(id);
               continue;
             }
@@ -137,6 +148,8 @@ export class MarketMakerStrategy extends BaseStrategy {
         if (toCancel.length > 0) {
           this.logger.info(`Cancelling ${toCancel.length} outdated/out-of-band orders`);
           await Promise.allSettled(toCancel.map((id) => this.client.cancelOrder(id)));
+          // remove from local metadata store
+          toCancel.forEach((id) => this.orderMeta.delete(id));
         }
       } catch (e: any) {
         this.logger.warn(`Failed during selective cancel step: ${e.message || e}`);
@@ -310,6 +323,30 @@ export class MarketMakerStrategy extends BaseStrategy {
 
         // 小延迟以给 API 缓口
         await new Promise((r) => setTimeout(r, 50));
+      }
+
+      // 同步 open orders，以便为没有直接返回 id 的新单录入 metadata（通过 price/qty/side 匹配）
+      try {
+        const openOrdersAfter = await this.client.getOpenOrders(this.tradingPair);
+        for (const o of openOrdersAfter) {
+          const id = o.id;
+          if (this.orderMeta.has(id)) continue; // 已有元信息
+
+          const price = new Decimal(o.price);
+          const qty = new Decimal(o.qty);
+          const side = o.side;
+          const createdAtMs = o.created_at ? new Date(o.created_at).getTime() : Date.now();
+
+          const match = orders.find((intend) =>
+            intend.side === side && new Decimal(intend.price).equals(price) && new Decimal(intend.qty).equals(qty)
+          );
+
+          if (match) {
+            this.orderMeta.set(id, { tier: match.tier, createdAt: createdAtMs, price });
+          }
+        }
+      } catch (e: any) {
+        this.logger.warn(`Failed to synchronize open orders after placing: ${e.message || e}`);
       }
 
       if (failedCount > 0) {
