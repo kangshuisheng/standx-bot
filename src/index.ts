@@ -31,6 +31,9 @@ let intervalId: ReturnType<typeof setInterval> | null = null;
 let statusIntervalId: ReturnType<typeof setInterval> | null = null;
 let cycleCount = 0;
 let lastError: string | null = null;
+let consecutiveErrors = 0; // 连续错误计数
+const MAX_CONSECUTIVE_ERRORS = 10; // 连续错误达到此数时暂停并通知
+let startTime: Date | null = null; // 启动时间
 
 // Telegram Bot（仅发送通知，不做 polling，避免 token 冲突）
 const bot = config.TELEGRAM_BOT_TOKEN
@@ -57,17 +60,35 @@ async function sendTelegramMessage(text: string, showButtons = false) {
 
 // 获取状态文本
 function getStatusText(): string {
+  const totalOrders = (config.ORDERS_TIER1 + config.ORDERS_TIER2 + config.ORDERS_TIER3) * 2;
+  const uptimeStr = startTime
+    ? formatUptime(Date.now() - startTime.getTime())
+    : "N/A";
+
   return `
 <b>🤖 StandX Liquidity Bot</b>
 
 <b>状态:</b> ${isRunning ? "🟢 运行中" : "🔴 已停止"}
+<b>运行时长:</b> ${uptimeStr}
 <b>交易对:</b> ${config.SYMBOL}
-<b>Spread:</b> ${config.SPREAD.times(100).toFixed(2)}%
-<b>单笔金额:</b> ${config.ORDER_SIZE_USD} USD
-<b>最大持仓:</b> ${config.MAX_INVENTORY_USD} USD
+<b>挂单分布:</b> T1=${config.ORDERS_TIER1}, T2=${config.ORDERS_TIER2}, T3=${config.ORDERS_TIER3} (共${totalOrders}单)
+<b>单边总额:</b> ${config.ORDER_SIZE_USD} USD
 <b>已执行周期:</b> ${cycleCount}
 ${lastError ? `\n<b>最近错误:</b> <code>${lastError}</code>` : ""}
 `;
+}
+
+// 格式化运行时长
+function formatUptime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) return `${days}天 ${hours % 24}小时`;
+  if (hours > 0) return `${hours}小时 ${minutes % 60}分钟`;
+  if (minutes > 0) return `${minutes}分钟`;
+  return `${seconds}秒`;
 }
 
 // 启动策略
@@ -81,6 +102,8 @@ async function startStrategy() {
   isRunning = true;
   cycleCount = 0;
   lastError = null;
+  consecutiveErrors = 0;
+  startTime = new Date();
 
   const interval = config.EXECUTION_INTERVAL || 5000;
 
@@ -90,9 +113,25 @@ async function startStrategy() {
     try {
       await marketMakerStrategy.execute();
       cycleCount++;
+      consecutiveErrors = 0; // 成功后重置错误计数
     } catch (e: any) {
       lastError = e.message;
-      logger.error("Strategy execution error:", e);
+      consecutiveErrors++;
+      logger.error(`Strategy execution error (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, e);
+
+      // 连续错误过多，暂停并通知
+      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        logger.error("Too many consecutive errors, pausing strategy...");
+        await sendTelegramMessage(
+          `🚨 <b>警告：连续 ${MAX_CONSECUTIVE_ERRORS} 次执行失败！</b>\n\n最近错误: <code>${lastError}</code>\n\n机器人已暂停，请检查后重启。`,
+          false
+        );
+        isRunning = false;
+        if (intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+      }
     } finally {
       isExecuting = false;
     }

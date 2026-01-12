@@ -230,14 +230,22 @@ export class MarketMakerStrategy extends BaseStrategy {
         `Placing ${orders.length} orders across 3 point tiers (100%/50%/10%)`
       );
 
-      // 5. 并发下单
-      const orderPromises = orders.map((o) =>
-        this.client.placeOrder(this.tradingPair, o.side, o.price, o.qty)
+      // 5. 并发下单（使用 allSettled 避免单个失败导致全部中断）
+      const orderResults = await Promise.allSettled(
+        orders.map((o) =>
+          this.client.placeOrder(this.tradingPair, o.side, o.price, o.qty)
+        )
       );
 
-      await Promise.all(orderPromises);
+      // 统计下单结果
+      const succeeded = orderResults.filter((r) => r.status === "fulfilled").length;
+      const failed = orderResults.filter((r) => r.status === "rejected").length;
 
-      this.logger.info("✅ Strategy cycle completed.");
+      if (failed > 0) {
+        this.logger.warn(`⚠️ ${failed}/${orders.length} orders failed`);
+      }
+
+      this.logger.info(`✅ Strategy cycle completed. (${succeeded}/${orders.length} orders placed)`);
     } catch (e: any) {
       this.logger.error(
         `Strategy cycle failed: ${e.message}`,
