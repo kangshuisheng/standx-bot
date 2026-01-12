@@ -135,7 +135,7 @@ export class MarketMakerStrategy extends BaseStrategy {
 
       // Tier 1: 100% 积分区，在 7-9 bps 之间分散（最远但仍在 0-10 bps 内）
       if (this.ordersTier1 > 0) {
-        const tier1Start = new Decimal("0.0007"); // 7 bps
+        const tier1Start = new Decimal("0.0008"); // 8 bps
         const tier1End = new Decimal("0.0009"); // 9 bps
         const tier1Step =
           this.ordersTier1 > 1
