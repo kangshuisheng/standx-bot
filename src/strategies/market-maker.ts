@@ -44,8 +44,11 @@ export class MarketMakerStrategy extends BaseStrategy {
         this.logger.warn(`Failed to cancel orders: ${e.message || e}`);
       }
 
-      // 2. Fetch Orderbook
-      const ob = await this.client.getOrderbook(this.tradingPair);
+      // 2. Fetch Orderbook & Market Prices
+      const [ob, marketPriceData] = await Promise.all([
+        this.client.getOrderbook(this.tradingPair),
+        this.client.getSymbolPrice(this.tradingPair),
+      ]);
 
       const bids = ob.bids || [];
       const asks = ob.asks || [];
@@ -57,10 +60,26 @@ export class MarketMakerStrategy extends BaseStrategy {
 
       const bestBid = new Decimal(bids[0][0]);
       const bestAsk = new Decimal(asks[0][0]);
-      const midPrice = bestBid.plus(bestAsk).dividedBy(2);
+      const orderbookMid = bestBid.plus(bestAsk).dividedBy(2);
+
+      // Use Mark Price as the primary reference for order placement (Standard for Points & Safety)
+      let referencePrice: Decimal;
+      if (marketPriceData && marketPriceData.mark_price) {
+        referencePrice = new Decimal(marketPriceData.mark_price);
+      } else if (marketPriceData && marketPriceData.index_price) {
+        referencePrice = new Decimal(marketPriceData.index_price);
+        this.logger.warn("Mark price unavailable, using Index Price.");
+      } else {
+        referencePrice = orderbookMid;
+        this.logger.warn("Mark/Index price unavailable, falling back to Orderbook Mid.");
+      }
+
+      const indexPrice = marketPriceData?.index_price
+        ? new Decimal(marketPriceData.index_price)
+        : new Decimal(0);
 
       this.logger.info(
-        `Market: ${midPrice.toFixed(2)} (Bid: ${bestBid}, Ask: ${bestAsk})`
+        `Prices -> Ref(Mark): ${referencePrice.toFixed(2)} | Index: ${indexPrice.toFixed(2)} | OB Mid: ${orderbookMid.toFixed(2)}`
       );
 
       // 3. Get Current Position - 检查是否有持仓
@@ -112,17 +131,16 @@ export class MarketMakerStrategy extends BaseStrategy {
 
       // 每个订单的数量（总量平分）
       const qtyPerOrder = this.orderSize
-        .dividedBy(midPrice)
+        .dividedBy(referencePrice)
         .dividedBy(totalOrders)
         .toDecimalPlaces(3, Decimal.ROUND_DOWN);
 
       const actualQty = qtyPerOrder.lessThan(MIN_QTY) ? MIN_QTY : qtyPerOrder;
 
       this.logger.info(
-        `Tier-based orders: T1=${this.ordersTier1}, T2=${
-          this.ordersTier2
+        `Tier-based orders: T1=${this.ordersTier1}, T2=${this.ordersTier2
         }, T3=${this.ordersTier3}, ${actualQty} BTC per order (~${actualQty
-          .times(midPrice)
+          .times(referencePrice)
           .toFixed(2)} USD)`
       );
 
@@ -133,9 +151,9 @@ export class MarketMakerStrategy extends BaseStrategy {
         tier: number;
       }> = [];
 
-      // Tier 1: 100% 积分区，在 7-9 bps 之间分散（最远但仍在 0-10 bps 内）
+      // Tier 1: 100% 积分区，在 8-9 bps 之间分散（最远但仍在 0-10 bps 内）
       if (this.ordersTier1 > 0) {
-        const tier1Start = new Decimal("0.0007"); // 7 bps
+        const tier1Start = new Decimal("0.0008"); // 8 bps
         const tier1End = new Decimal("0.0009"); // 9 bps
         const tier1Step =
           this.ordersTier1 > 1
@@ -147,8 +165,8 @@ export class MarketMakerStrategy extends BaseStrategy {
             this.ordersTier1 > 1
               ? tier1Start.plus(tier1Step.times(i))
               : tier1End;
-          const buyPrice = midPrice.times(new Decimal(1).minus(offset));
-          const sellPrice = midPrice.times(new Decimal(1).plus(offset));
+          const buyPrice = referencePrice.times(new Decimal(1).minus(offset));
+          const sellPrice = referencePrice.times(new Decimal(1).plus(offset));
           orders.push({
             side: "buy",
             price: buyPrice,
@@ -178,8 +196,8 @@ export class MarketMakerStrategy extends BaseStrategy {
             this.ordersTier2 > 1
               ? tier2Start.plus(tier2Step.times(i))
               : tier2End;
-          const buyPrice = midPrice.times(new Decimal(1).minus(offset));
-          const sellPrice = midPrice.times(new Decimal(1).plus(offset));
+          const buyPrice = referencePrice.times(new Decimal(1).minus(offset));
+          const sellPrice = referencePrice.times(new Decimal(1).plus(offset));
           orders.push({
             side: "buy",
             price: buyPrice,
@@ -209,8 +227,8 @@ export class MarketMakerStrategy extends BaseStrategy {
             this.ordersTier3 > 1
               ? tier3Start.plus(tier3Step.times(i))
               : tier3End;
-          const buyPrice = midPrice.times(new Decimal(1).minus(offset));
-          const sellPrice = midPrice.times(new Decimal(1).plus(offset));
+          const buyPrice = referencePrice.times(new Decimal(1).minus(offset));
+          const sellPrice = referencePrice.times(new Decimal(1).plus(offset));
           orders.push({
             side: "buy",
             price: buyPrice,
