@@ -398,8 +398,16 @@ export class MarketMakerStrategy extends BaseStrategy {
       };
 
       const placePromises: Promise<any>[] = [];
+      let placementsThisCycle = 0;
+      const maxPlacements = (config as any).MAX_PLACEMENTS_PER_CYCLE ?? 3; // conservative default
+
       for (let i = 0; i < desiredPairs.length; i++) {
         if (matched.has(i)) continue; // already satisfied
+        if (placementsThisCycle >= maxPlacements) {
+          this.logger.info(`Max placements per cycle reached (${maxPlacements}), skipping remaining pairs.`);
+          break;
+        }
+
         const dp = desiredPairs[i];
 
         // If this tier already has a buy (or sell) in the band, skip that side
@@ -433,6 +441,34 @@ export class MarketMakerStrategy extends BaseStrategy {
 
         dp.sellPrice = sell;
 
+        // SAFETY: ensure candidate prices are sufficiently away from current best bid/ask to avoid being taken
+        let skipBuyDueToProximity = false;
+        let skipSellDueToProximity = false;
+        try {
+          const ob = await this.client.getOrderbook(this.tradingPair);
+          const bestBidCur = ob.bids && ob.bids[0] ? new Decimal(ob.bids[0][0]) : null;
+          const bestAskCur = ob.asks && ob.asks[0] ? new Decimal(ob.asks[0][0]) : null;
+          const minDistBps = new Decimal((config as any).MIN_DISTANCE_FROM_BEST_BPS || 0.0005);
+
+          if (bestBidCur && !occ.buy) {
+            const safeBuyLimit = bestBidCur.minus(bestBidCur.times(minDistBps)).minus(minTick);
+            if (dp.buyPrice.greaterThan(safeBuyLimit)) {
+              this.logger.info(`BUY for tier ${dp.tier} is too close to market (${dp.buyPrice.toFixed(2)} > safe ${safeBuyLimit.toFixed(2)}). Will skip buy.`);
+              skipBuyDueToProximity = true;
+            }
+          }
+
+          if (bestAskCur && !occ.sell) {
+            const safeSellLimit = bestAskCur.plus(bestAskCur.times(minDistBps)).plus(minTick);
+            if (dp.sellPrice.lessThan(safeSellLimit)) {
+              this.logger.info(`SELL for tier ${dp.tier} is too close to market (${dp.sellPrice.toFixed(2)} < safe ${safeSellLimit.toFixed(2)}). Will skip sell.`);
+              skipSellDueToProximity = true;
+            }
+          }
+        } catch (e) {
+          // ignore safety adjustment if orderbook fetch fails
+        }
+
         // After shifting, ensure buy < sell with at least one tick
         if (
           !occ.buy &&
@@ -446,51 +482,62 @@ export class MarketMakerStrategy extends BaseStrategy {
         }
 
         // Check again against latest open orders to avoid near-duplicates
+        // Determine skip due to proximity checks from orderbook
         if (!occ.buy) {
-          const nearby = existsNearby("buy", dp.buyPrice);
-          if (nearby) {
-            this.logger.info(
-              `Skipping BUY for tier ${dp.tier} because existing order ${nearby.id} @ ${nearby.price} is within ${minTick} of planned ${dp.buyPrice.toFixed(2)}`,
-            );
-            // mark price as seen so other pairs don't pick the same
-            seenBuyPrices.push(new Decimal(nearby.price));
+          if (skipBuyDueToProximity) {
+            this.logger.info(`Skipping BUY for tier ${dp.tier} due to proximity to market.`);
           } else {
-            // Reserve the rounded prices to avoid collisions with later pairs in this cycle
-            seenBuyPrices.push(dp.buyPrice);
-            this.logger.info(
-              `Placing BUY for tier ${dp.tier} -> ${dp.buyPrice.toFixed(2)}`,
-            );
-            placePromises.push(
-              this.client.placeOrder(
-                this.tradingPair,
-                "buy",
-                dp.buyPrice,
-                actualQty,
-              ),
-            );
+            const nearby = existsNearby("buy", dp.buyPrice);
+            if (nearby) {
+              this.logger.info(
+                `Skipping BUY for tier ${dp.tier} because existing order ${nearby.id} @ ${nearby.price} is within ${minTick} of planned ${dp.buyPrice.toFixed(2)}`,
+              );
+              // mark price as seen so other pairs don't pick the same
+              seenBuyPrices.push(new Decimal(nearby.price));
+            } else {
+              // Reserve the rounded prices to avoid collisions with later pairs in this cycle
+              seenBuyPrices.push(dp.buyPrice);
+              this.logger.info(
+                `Placing BUY for tier ${dp.tier} -> ${dp.buyPrice.toFixed(2)}`,
+              );
+              placePromises.push(
+                this.client.placeOrder(
+                  this.tradingPair,
+                  "buy",
+                  dp.buyPrice,
+                  actualQty,
+                ),
+              );
+              placementsThisCycle++;
+            }
           }
         }
 
         if (!occ.sell) {
-          const nearbyS = existsNearby("sell", dp.sellPrice);
-          if (nearbyS) {
-            this.logger.info(
-              `Skipping SELL for tier ${dp.tier} because existing order ${nearbyS.id} @ ${nearbyS.price} is within ${minTick} of planned ${dp.sellPrice.toFixed(2)}`,
-            );
-            seenSellPrices.push(new Decimal(nearbyS.price));
+          if (skipSellDueToProximity) {
+            this.logger.info(`Skipping SELL for tier ${dp.tier} due to proximity to market.`);
           } else {
-            seenSellPrices.push(dp.sellPrice);
-            this.logger.info(
-              `Placing SELL for tier ${dp.tier} -> ${dp.sellPrice.toFixed(2)}`,
-            );
-            placePromises.push(
-              this.client.placeOrder(
-                this.tradingPair,
-                "sell",
-                dp.sellPrice,
-                actualQty,
-              ),
-            );
+            const nearbyS = existsNearby("sell", dp.sellPrice);
+            if (nearbyS) {
+              this.logger.info(
+                `Skipping SELL for tier ${dp.tier} because existing order ${nearbyS.id} @ ${nearbyS.price} is within ${minTick} of planned ${dp.sellPrice.toFixed(2)}`,
+              );
+              seenSellPrices.push(new Decimal(nearbyS.price));
+            } else {
+              seenSellPrices.push(dp.sellPrice);
+              this.logger.info(
+                `Placing SELL for tier ${dp.tier} -> ${dp.sellPrice.toFixed(2)}`,
+              );
+              placePromises.push(
+                this.client.placeOrder(
+                  this.tradingPair,
+                  "sell",
+                  dp.sellPrice,
+                  actualQty,
+                ),
+              );
+              placementsThisCycle++;
+            }
           }
         }
 

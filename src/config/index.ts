@@ -110,6 +110,14 @@ const env = {
   HEALTH_MIN_VOLATILITY_TO_ACT: process.env.HEALTH_MIN_VOLATILITY_TO_ACT
     ? parseFloat(process.env.HEALTH_MIN_VOLATILITY_TO_ACT)
     : undefined,
+
+  // Safety and rate limits
+  MIN_DISTANCE_FROM_BEST_BPS: process.env.MIN_DISTANCE_FROM_BEST_BPS
+    ? parseFloat(process.env.MIN_DISTANCE_FROM_BEST_BPS)
+    : 0.0005, // 5 bps
+  MAX_PLACEMENTS_PER_CYCLE: process.env.MAX_PLACEMENTS_PER_CYCLE
+    ? parseInt(process.env.MAX_PLACEMENTS_PER_CYCLE)
+    : 3,
   CANCEL_RETRY_COUNT: process.env.CANCEL_RETRY_COUNT
     ? parseInt(process.env.CANCEL_RETRY_COUNT)
     : 3,
