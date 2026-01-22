@@ -218,6 +218,8 @@ export class MarketMakerStrategy extends BaseStrategy {
       const threshold = new Decimal("0.0001"); // 1 bps
       const matched = new Set<number>(); // indexes into desiredPairs that are satisfied
 
+      const blockedPrices = new Set<string>();
+
       for (const o of openOrders) {
         const openPrice = new Decimal(o.price);
         const side: "buy" | "sell" = o.side;
@@ -258,23 +260,121 @@ export class MarketMakerStrategy extends BaseStrategy {
         try {
           this.logger.info(`Cancelling non-matching order ${o.id} @ ${o.price}`);
           await this.client.cancelOrder(o.id, this.tradingPair);
+          // Cancellation succeeded; nothing to block for this price
         } catch (e: any) {
-          this.logger.warn(`Failed to cancel order ${o.id}: ${e.message || e}`);
+          // Cancellation failed - mark rounded price as blocked to avoid placing too-close orders
+          const rounded = new Decimal(o.price).toFixed(2);
+          blockedPrices.add(rounded);
+          this.logger.warn(`Failed to cancel order ${o.id}: ${e.message || e}. Price ${rounded} will be blocked.`);
         }
       }
 
-      // Place missing pairs
+      // Before placing missing pairs, ensure planned prices don't sit next to blocked prices (±minTick)
+      const isBlockedNearby = (price: Decimal) => {
+        const p = new Decimal(price);
+        for (const b of Array.from(blockedPrices)) {
+          const bp = new Decimal(b);
+          if (
+            p.minus(bp).abs().lessThanOrEqualTo(minTick)
+          ) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      // Define official tier bands (relative to referencePrice) per docs
+      const tierBands: { [k: number]: { min: Decimal; max: Decimal } } = {
+        1: { min: new Decimal(0), max: new Decimal("0.001") }, // 0-10 bps
+        2: { min: new Decimal("0.001"), max: new Decimal("0.003") }, // 10-30 bps
+        3: { min: new Decimal("0.003"), max: new Decimal("0.01") }, // 30 bps - 1%
+      };
+
+      // Helper: check if an existing open order is within the tier band
+      const isOrderInTierBand = (o: any, side: "buy" | "sell", tier: number) => {
+        const band = tierBands[tier];
+        const priceDec = new Decimal(o.price);
+        let rel = new Decimal(0);
+        if (side === "buy") {
+          rel = referencePrice.minus(priceDec).dividedBy(referencePrice);
+        } else {
+          rel = priceDec.minus(referencePrice).dividedBy(referencePrice);
+        }
+        return rel.greaterThanOrEqualTo(band.min) && rel.lessThanOrEqualTo(band.max);
+      };
+
+      // Compute occupancy per tier per side based on existing openOrders
+      const tierOccupied = new Map<number, { buy: boolean; sell: boolean }>();
+      for (const dp of desiredPairs) {
+        tierOccupied.set(dp.tier, { buy: false, sell: false });
+      }
+
+      for (const o of openOrders) {
+        for (const dp of desiredPairs) {
+          if (isOrderInTierBand(o, o.side, dp.tier)) {
+            const v = tierOccupied.get(dp.tier)!;
+            if (o.side === "buy") v.buy = true;
+            else v.sell = true;
+            tierOccupied.set(dp.tier, v);
+          }
+        }
+      }
+
       const placePromises: Promise<any>[] = [];
       for (let i = 0; i < desiredPairs.length; i++) {
         if (matched.has(i)) continue; // already satisfied
         const dp = desiredPairs[i];
-        this.logger.info(`Placing pair for tier ${dp.tier} -> BUY ${dp.buyPrice.toFixed(2)} / SELL ${dp.sellPrice.toFixed(2)}`);
-        placePromises.push(
-          this.client.placeOrder(this.tradingPair, "buy", dp.buyPrice, actualQty)
-        );
-        placePromises.push(
-          this.client.placeOrder(this.tradingPair, "sell", dp.sellPrice, actualQty)
-        );
+
+        // If this tier already has a buy (or sell) in the band, skip that side
+        const occ = tierOccupied.get(dp.tier) || { buy: false, sell: false };
+        if (occ.buy) this.logger.info(`Skipping buy for tier ${dp.tier} because band already occupied`);
+        if (occ.sell) this.logger.info(`Skipping sell for tier ${dp.tier} because band already occupied`);
+
+        // Adjust if buy is blocked or too close to a blocked price
+        let buy = dp.buyPrice;
+        if (!occ.buy) {
+          while (isBlockedNearby(buy) || seenBuyPrices.has(buy.toFixed(2))) {
+            buy = buy.minus(minTick);
+          }
+        }
+
+        dp.buyPrice = buy;
+
+        // Adjust if sell is blocked or too close to a blocked price
+        let sell = dp.sellPrice;
+        if (!occ.sell) {
+          while (isBlockedNearby(sell) || seenSellPrices.has(sell.toFixed(2))) {
+            sell = sell.plus(minTick);
+          }
+        }
+
+        dp.sellPrice = sell;
+
+        // After shifting, ensure buy < sell with at least one tick
+        if (!occ.buy && !occ.sell && dp.buyPrice.greaterThanOrEqualTo(dp.sellPrice)) {
+          this.logger.warn(
+            `After avoiding blocked price for tier ${dp.tier}, buy >= sell. Skipping placing this pair: buy=${dp.buyPrice.toFixed(2)} sell=${dp.sellPrice.toFixed(2)}`
+          );
+          continue; // skip this pair to avoid risk
+        }
+
+        // Reserve the rounded prices to avoid collisions with later pairs in this cycle
+        if (!occ.buy) seenBuyPrices.add(dp.buyPrice.toFixed(2));
+        if (!occ.sell) seenSellPrices.add(dp.sellPrice.toFixed(2));
+
+        // Place only sides that are not occupied
+        if (!occ.buy) {
+          this.logger.info(`Placing BUY for tier ${dp.tier} -> ${dp.buyPrice.toFixed(2)}`);
+          placePromises.push(
+            this.client.placeOrder(this.tradingPair, "buy", dp.buyPrice, actualQty)
+          );
+        }
+        if (!occ.sell) {
+          this.logger.info(`Placing SELL for tier ${dp.tier} -> ${dp.sellPrice.toFixed(2)}`);
+          placePromises.push(
+            this.client.placeOrder(this.tradingPair, "sell", dp.sellPrice, actualQty)
+          );
+        }
       }
 
       await Promise.all(placePromises);
