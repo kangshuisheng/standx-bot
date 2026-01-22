@@ -5,6 +5,11 @@ import { base58 } from "@scure/base";
 import { v4 as uuidv4 } from "uuid";
 import { Logger } from "../utils/logger";
 import { ed25519 } from "@noble/curves/ed25519.js";
+import { config } from "../config";
+
+function sleep(ms: number) {
+  return new Promise((res) => setTimeout(res, ms));
+} 
 
 // 只支持 BSC
 export type Chain = "bsc";
@@ -290,35 +295,52 @@ export class StandXClient {
       }
     }
 
-    try {
-      const response = await this.axiosInstance.request({
-        url: endpoint,
-        method,
-        data,
-      });
-      return response.data;
-    } catch (error: any) {
-      // 401 自动重试逻辑
-      if (error.response?.status === 401) {
-        if (this.wallet) {
-          this.logger.info("Token expired or invalid, re-authenticating...");
-          await this.authenticate();
-          const response = await this.axiosInstance.request({
-            url: endpoint,
-            method,
-            data,
-          });
-          return response.data;
-        } else {
-          this.logger.error(
-            "Token expired. Please restart the bot with a fresh token."
-          );
-          throw new Error(
-            "Access Token expired. Please run manual-login script again."
-          );
+    const maxAttempts = config.CANCEL_RETRY_COUNT ?? 3;
+    const baseBackoff = config.CANCEL_RETRY_BACKOFF_MS ?? 500;
+    const maxBackoff = config.CANCEL_RETRY_MAX_BACKOFF_MS ?? 5000;
+
+    let attempt = 0;
+    while (true) {
+      try {
+        const response = await this.axiosInstance.request({
+          url: endpoint,
+          method,
+          data,
+        });
+        return response.data;
+      } catch (error: any) {
+        // 401 自动重试（仅在持有私钥时可重登）
+        if (error.response?.status === 401) {
+          if (this.wallet) {
+            this.logger.info("Token expired or invalid, re-authenticating...");
+            await this.authenticate();
+            attempt++;
+            if (attempt >= maxAttempts) {
+              throw new Error("Re-auth failed after retries.");
+            }
+            continue; // retry the request after refresh
+          } else {
+            this.logger.error(
+              "Access Token expired and no private key available."
+            );
+            throw new Error(
+              "Access Token expired. Please run manual-login script again."
+            );
+          }
         }
+
+        // 网络或超时等可重试错误
+        attempt++;
+        if (attempt >= maxAttempts) {
+          throw new Error(`API request failed after ${attempt} attempts: ${error.message}`);
+        }
+
+        const backoff = Math.min(baseBackoff * 2 ** (attempt - 1), maxBackoff);
+        this.logger.warn(
+          `Request failed, retrying in ${backoff}ms (attempt ${attempt}/${maxAttempts}) - ${error.message}`
+        );
+        await sleep(backoff);
       }
-      throw new Error(`API request failed: ${error.message}`);
     }
   }
 
@@ -407,24 +429,93 @@ export class StandXClient {
    * 撤销单个订单
    * POST /api/cancel_order
    */
-  public async cancelOrder(orderId: number): Promise<void> {
-    await this.sendRequest("/api/cancel_order", "POST", { order_id: orderId });
+  public async cancelOrder(orderId: number, symbol?: string): Promise<void> {
+    const maxAttempts = config.CANCEL_RETRY_COUNT ?? 3;
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        await this.sendRequest("/api/cancel_order", "POST", { order_id: orderId });
+      } catch (e: any) {
+        if (i === maxAttempts - 1) throw e;
+        const backoff = Math.min(
+          config.CANCEL_RETRY_BACKOFF_MS ?? 500 * 2 ** i,
+          config.CANCEL_RETRY_MAX_BACKOFF_MS ?? 5000
+        );
+        this.logger.warn(`Cancel order ${orderId} failed, retrying in ${backoff}ms`);
+        await sleep(backoff);
+        continue;
+      }
+
+      // 如果提供了 symbol，则确认订单是否真的被撤销
+      if (symbol) {
+        const remaining = await this.getOpenOrders(symbol);
+        const stillThere = remaining.find((o: any) => o.id === orderId);
+        if (stillThere) {
+          // 如果最后一次尝试仍然存在则抛出错误
+          if (i === maxAttempts - 1) {
+            throw new Error(`Order ${orderId} still exists after cancel attempts.`);
+          }
+          const backoff = Math.min(
+            config.CANCEL_RETRY_BACKOFF_MS ?? 500 * 2 ** i,
+            config.CANCEL_RETRY_MAX_BACKOFF_MS ?? 5000
+          );
+          this.logger.warn(`Order ${orderId} still present, retrying cancel in ${backoff}ms`);
+          await sleep(backoff);
+          continue;
+        }
+      }
+
+      return;
+    }
   }
 
   /**
    * 撤销所有订单 (通过查询后逐个撤销)
    */
   public async cancelAllOrders(symbol: string): Promise<void> {
-    const openOrders = await this.getOpenOrders(symbol);
+    let openOrders = await this.getOpenOrders(symbol);
     if (openOrders.length === 0) {
       this.logger.info("No open orders to cancel.");
       return;
     }
+
     const orderIds = openOrders.map((o: any) => o.id);
-    // Use cancel_orders endpoint for batch cancel
-    await this.sendRequest("/api/cancel_orders", "POST", {
-      order_id_list: orderIds,
-    });
-    this.logger.info(`Cancelled ${orderIds.length} orders.`);
+
+    const maxAttempts = config.CANCEL_RETRY_COUNT ?? 3;
+
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        await this.sendRequest("/api/cancel_orders", "POST", {
+          order_id_list: orderIds,
+        });
+      } catch (e: any) {
+        if (i === maxAttempts - 1) throw e;
+        const backoff = Math.min(
+          config.CANCEL_RETRY_BACKOFF_MS ?? 500 * 2 ** i,
+          config.CANCEL_RETRY_MAX_BACKOFF_MS ?? 5000
+        );
+        this.logger.warn(`Batch cancel failed, retrying in ${backoff}ms`);
+        await sleep(backoff);
+        continue;
+      }
+
+      // verify
+      openOrders = await this.getOpenOrders(symbol);
+      if (openOrders.length === 0) {
+        this.logger.info("Cancelled all open orders.");
+        return;
+      }
+
+      // If still present and last attempt, throw
+      if (i === maxAttempts - 1) {
+        throw new Error(`Failed to cancel all orders: ${openOrders.length} remaining.`);
+      }
+
+      const backoff = Math.min(
+        config.CANCEL_RETRY_BACKOFF_MS ?? 500 * 2 ** i,
+        config.CANCEL_RETRY_MAX_BACKOFF_MS ?? 5000
+      );
+      this.logger.warn(`Some orders still present, retrying batch cancel in ${backoff}ms`);
+      await sleep(backoff);
+    }
   }
 }

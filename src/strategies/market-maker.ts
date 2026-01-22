@@ -37,12 +37,8 @@ export class MarketMakerStrategy extends BaseStrategy {
   public async execute(): Promise<void> {
     this.logger.info("Executing Market Maker Strategy cycle...");
     try {
-      // 1. Cancel existing orders to clear the book for new quotes
-      try {
-        await this.client.cancelAllOrders(this.tradingPair);
-      } catch (e: any) {
-        this.logger.warn(`Failed to cancel orders: ${e.message || e}`);
-      }
+      // 1. Fetch existing open orders and reconcile (avoid full cancellations)
+      let openOrders = await this.client.getOpenOrders(this.tradingPair);
 
       // 2. Fetch Orderbook & Market Prices
       const [ob, marketPriceData] = await Promise.all([
@@ -126,134 +122,153 @@ export class MarketMakerStrategy extends BaseStrategy {
       // Tier 3: 30 bps-1% → 10% 积分 → 挂在 ~95 bps（接近边缘但仍在10%区）
 
       const MIN_QTY = new Decimal("0.001");
-      const totalOrders =
-        this.ordersTier1 + this.ordersTier2 + this.ordersTier3;
+      // compute how many pairs we will place (1 pair per enabled tier)
+      const pairsCount =
+        (this.ordersTier1 > 0 ? 1 : 0) +
+        (this.ordersTier2 > 0 ? 1 : 0) +
+        (this.ordersTier3 > 0 ? 1 : 0);
 
-      // 每个订单的数量（总量平分）
-      const qtyPerOrder = this.orderSize
+      if (pairsCount === 0) {
+        this.logger.warn("No tiers enabled, skipping cycle.");
+        return;
+      }
+
+      // 每对的数量（总量在启用的 pairs 之间均分）
+      const qtyPerSide = this.orderSize
         .dividedBy(referencePrice)
-        .dividedBy(totalOrders)
+        .dividedBy(pairsCount)
         .toDecimalPlaces(3, Decimal.ROUND_DOWN);
 
-      const actualQty = qtyPerOrder.lessThan(MIN_QTY) ? MIN_QTY : qtyPerOrder;
+      const actualQty = qtyPerSide.lessThan(MIN_QTY) ? MIN_QTY : qtyPerSide;
 
       this.logger.info(
-        `Tier-based orders: T1=${this.ordersTier1}, T2=${this.ordersTier2
-        }, T3=${this.ordersTier3}, ${actualQty} BTC per order (~${actualQty
+        `Using ${pairsCount} pairs. ${actualQty} BTC per side (~${actualQty
           .times(referencePrice)
           .toFixed(2)} USD)`
       );
 
-      const orders: Array<{
-        side: "buy" | "sell";
-        price: Decimal;
-        qty: Decimal;
-        tier: number;
-      }> = [];
+      // Build desired pairs (single buy+sell per enabled tier, using edge offsets)
+      type PairSpec = { tier: number; buyPrice: Decimal; sellPrice: Decimal };
+      const desiredPairs: PairSpec[] = [];
 
-      // Tier 1: 100% 积分区，在 8-9 bps 之间分散（最远但仍在 0-10 bps 内）
       if (this.ordersTier1 > 0) {
-        const tier1Start = new Decimal("0.0008"); // 8 bps
-        const tier1End = new Decimal("0.0009"); // 9 bps
-        const tier1Step =
-          this.ordersTier1 > 1
-            ? tier1End.minus(tier1Start).dividedBy(this.ordersTier1 - 1)
-            : new Decimal(0);
-
-        for (let i = 0; i < this.ordersTier1; i++) {
-          const offset =
-            this.ordersTier1 > 1
-              ? tier1Start.plus(tier1Step.times(i))
-              : tier1End;
-          const buyPrice = referencePrice.times(new Decimal(1).minus(offset));
-          const sellPrice = referencePrice.times(new Decimal(1).plus(offset));
-          orders.push({
-            side: "buy",
-            price: buyPrice,
-            qty: actualQty,
-            tier: 1,
-          });
-          orders.push({
-            side: "sell",
-            price: sellPrice,
-            qty: actualQty,
-            tier: 1,
-          });
-        }
+        const offset = new Decimal("0.0009"); // 9 bps (edge for Tier1)
+        desiredPairs.push({
+          tier: 1,
+          buyPrice: referencePrice.times(new Decimal(1).minus(offset)),
+          sellPrice: referencePrice.times(new Decimal(1).plus(offset)),
+        });
       }
 
-      // Tier 2: 50% 积分区，在 15-28 bps 之间分散
       if (this.ordersTier2 > 0) {
-        const tier2Start = new Decimal("0.0015"); // 15 bps
-        const tier2End = new Decimal("0.0028"); // 28 bps
-        const tier2Step =
-          this.ordersTier2 > 1
-            ? tier2End.minus(tier2Start).dividedBy(this.ordersTier2 - 1)
-            : new Decimal(0);
-
-        for (let i = 0; i < this.ordersTier2; i++) {
-          const offset =
-            this.ordersTier2 > 1
-              ? tier2Start.plus(tier2Step.times(i))
-              : tier2End;
-          const buyPrice = referencePrice.times(new Decimal(1).minus(offset));
-          const sellPrice = referencePrice.times(new Decimal(1).plus(offset));
-          orders.push({
-            side: "buy",
-            price: buyPrice,
-            qty: actualQty,
-            tier: 2,
-          });
-          orders.push({
-            side: "sell",
-            price: sellPrice,
-            qty: actualQty,
-            tier: 2,
-          });
-        }
+        const offset = new Decimal("0.0028"); // 28 bps (edge for Tier2)
+        desiredPairs.push({
+          tier: 2,
+          buyPrice: referencePrice.times(new Decimal(1).minus(offset)),
+          sellPrice: referencePrice.times(new Decimal(1).plus(offset)),
+        });
       }
 
-      // Tier 3: 10% 积分区，在 40-95 bps 之间分散
       if (this.ordersTier3 > 0) {
-        const tier3Start = new Decimal("0.0040"); // 40 bps
-        const tier3End = new Decimal("0.0095"); // 95 bps
-        const tier3Step =
-          this.ordersTier3 > 1
-            ? tier3End.minus(tier3Start).dividedBy(this.ordersTier3 - 1)
-            : new Decimal(0);
+        const offset = new Decimal("0.0095"); // 95 bps (edge for Tier3)
+        desiredPairs.push({
+          tier: 3,
+          buyPrice: referencePrice.times(new Decimal(1).minus(offset)),
+          sellPrice: referencePrice.times(new Decimal(1).plus(offset)),
+        });
+      }
 
-        for (let i = 0; i < this.ordersTier3; i++) {
-          const offset =
-            this.ordersTier3 > 1
-              ? tier3Start.plus(tier3Step.times(i))
-              : tier3End;
-          const buyPrice = referencePrice.times(new Decimal(1).minus(offset));
-          const sellPrice = referencePrice.times(new Decimal(1).plus(offset));
-          orders.push({
-            side: "buy",
-            price: buyPrice,
-            qty: actualQty,
-            tier: 3,
-          });
-          orders.push({
-            side: "sell",
-            price: sellPrice,
-            qty: actualQty,
-            tier: 3,
-          });
+      // Reconcile existing orders: keep matching ones (within threshold) and cancel the rest
+      const threshold = new Decimal("0.0001"); // 1 bps
+      const matched = new Set<number>(); // indexes into desiredPairs that are satisfied
+
+      for (const o of openOrders) {
+        const openPrice = new Decimal(o.price);
+        const side: "buy" | "sell" = o.side;
+        let foundIndex = -1;
+        for (let i = 0; i < desiredPairs.length; i++) {
+          if (matched.has(i)) continue;
+          const dp = desiredPairs[i];
+          if (
+            side === "buy" &&
+            openPrice
+              .minus(dp.buyPrice)
+              .abs()
+              .dividedBy(dp.buyPrice)
+              .lessThanOrEqualTo(threshold)
+          ) {
+            foundIndex = i;
+            break;
+          }
+          if (
+            side === "sell" &&
+            openPrice
+              .minus(dp.sellPrice)
+              .abs()
+              .dividedBy(dp.sellPrice)
+              .lessThanOrEqualTo(threshold)
+          ) {
+            foundIndex = i;
+            break;
+          }
+        }
+
+        if (foundIndex >= 0) {
+          matched.add(foundIndex);
+          continue;
+        }
+
+        // not matched -> cancel it
+        try {
+          this.logger.info(`Cancelling non-matching order ${o.id} @ ${o.price}`);
+          await this.client.cancelOrder(o.id, this.tradingPair);
+        } catch (e: any) {
+          this.logger.warn(`Failed to cancel order ${o.id}: ${e.message || e}`);
         }
       }
 
-      this.logger.info(
-        `Placing ${orders.length} orders across 3 point tiers (100%/50%/10%)`
+      // Place missing pairs
+      const placePromises: Promise<any>[] = [];
+      for (let i = 0; i < desiredPairs.length; i++) {
+        if (matched.has(i)) continue; // already satisfied
+        const dp = desiredPairs[i];
+        this.logger.info(`Placing pair for tier ${dp.tier} -> BUY ${dp.buyPrice.toFixed(2)} / SELL ${dp.sellPrice.toFixed(2)}`);
+        placePromises.push(
+          this.client.placeOrder(this.tradingPair, "buy", dp.buyPrice, actualQty)
+        );
+        placePromises.push(
+          this.client.placeOrder(this.tradingPair, "sell", dp.sellPrice, actualQty)
+        );
+      }
+
+      await Promise.all(placePromises);
+
+      // Ensure at least one pair exists in 10 bps band (fallback)
+      openOrders = await this.client.getOpenOrders(this.tradingPair);
+      const within10bps = new Decimal("0.001");
+      const hasBidWithin10bps = openOrders.some((o: any) =>
+        o.side === "buy" &&
+        new Decimal(o.price).minus(referencePrice).abs().dividedBy(referencePrice).lessThanOrEqualTo(within10bps)
+      );
+      const hasAskWithin10bps = openOrders.some((o: any) =>
+        o.side === "sell" &&
+        new Decimal(o.price).minus(referencePrice).abs().dividedBy(referencePrice).lessThanOrEqualTo(within10bps)
       );
 
-      // 5. 并发下单
-      const orderPromises = orders.map((o) =>
-        this.client.placeOrder(this.tradingPair, o.side, o.price, o.qty)
-      );
+      if (!hasBidWithin10bps || !hasAskWithin10bps) {
+        this.logger.warn("No both-sides pair within 10 bps detected; placing a fallback tight pair.");
+        const fbOffset = new Decimal("0.0009");
+        const fbBuy = referencePrice.times(new Decimal(1).minus(fbOffset));
+        const fbSell = referencePrice.times(new Decimal(1).plus(fbOffset));
+        try {
+          await this.client.placeOrder(this.tradingPair, "buy", fbBuy, actualQty);
+          await this.client.placeOrder(this.tradingPair, "sell", fbSell, actualQty);
+        } catch (e: any) {
+          this.logger.error("Failed to place fallback pair:", e);
+        }
+      }
 
-      await Promise.all(orderPromises);
+      this.logger.info("✅ Strategy cycle completed.");
 
       this.logger.info("✅ Strategy cycle completed.");
     } catch (e: any) {

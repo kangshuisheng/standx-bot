@@ -27,9 +27,20 @@ const configSchema = z.object({
   // 30bps-1% (0.3%-1%): 10% 积分
   // 每个档位默认挂1对订单（买+卖），放在档位边缘避免成交
   ORDERS_TIER1: z.number().default(1), // 在 100% 积分区挂单数（每侧）- 最近，保守
-  ORDERS_TIER2: z.number().default(3), // 在 50% 积分区挂单数（每侧）- 较安全，多挂
-  ORDERS_TIER3: z.number().default(3), // 在 10% 积分区挂单数（每侧）- 最安全，多挂
+  ORDERS_TIER2: z.number().default(1), // 在 50% 积分区挂单数（每侧）- 改为 1 单
+  ORDERS_TIER3: z.number().default(1), // 在 10% 积分区挂单数（每侧）- 改为 1 单
   EXECUTION_INTERVAL: z.number().default(5000),
+  
+  // Retry / watchdog / reminder configs
+  CANCEL_RETRY_COUNT: z.number().default(3),
+  CANCEL_RETRY_BACKOFF_MS: z.number().default(500),
+  CANCEL_RETRY_MAX_BACKOFF_MS: z.number().default(5000),
+  SESSION_REMINDER_DAYS: z.number().default(5),
+  SESSION_REMINDER_REPEAT: z.boolean().default(false),
+  SESSION_REMINDER_CHECK_INTERVAL_MS: z.number().default(60 * 60 * 1000),
+  WATCHDOG_INTERVAL_MS: z.number().default(60000),
+  OPEN_ORDERS_ALERT_THRESHOLD: z.number().default(1),
+  EMERGENCY_WALLET_PRIVATE_KEY: z.string().optional(),
 });
 
 // 加载环境变量
@@ -57,6 +68,30 @@ const env = {
   EXECUTION_INTERVAL: process.env.EXECUTION_INTERVAL
     ? parseInt(process.env.EXECUTION_INTERVAL)
     : 5000,
+  CANCEL_RETRY_COUNT: process.env.CANCEL_RETRY_COUNT
+    ? parseInt(process.env.CANCEL_RETRY_COUNT)
+    : 3,
+  CANCEL_RETRY_BACKOFF_MS: process.env.CANCEL_RETRY_BACKOFF_MS
+    ? parseInt(process.env.CANCEL_RETRY_BACKOFF_MS)
+    : 500,
+  CANCEL_RETRY_MAX_BACKOFF_MS: process.env.CANCEL_RETRY_MAX_BACKOFF_MS
+    ? parseInt(process.env.CANCEL_RETRY_MAX_BACKOFF_MS)
+    : 5000,
+  SESSION_REMINDER_DAYS: process.env.SESSION_REMINDER_DAYS
+    ? parseInt(process.env.SESSION_REMINDER_DAYS)
+    : 5,
+  SESSION_REMINDER_REPEAT: process.env.SESSION_REMINDER_REPEAT === "true",
+  SESSION_REMINDER_CHECK_INTERVAL_MS: process.env.SESSION_REMINDER_CHECK_INTERVAL_MS
+    ? parseInt(process.env.SESSION_REMINDER_CHECK_INTERVAL_MS)
+    : 60 * 60 * 1000,
+  WATCHDOG_INTERVAL_MS: process.env.WATCHDOG_INTERVAL_MS
+    ? parseInt(process.env.WATCHDOG_INTERVAL_MS)
+    : 60000,
+  OPEN_ORDERS_ALERT_THRESHOLD: process.env.OPEN_ORDERS_ALERT_THRESHOLD
+    ? parseInt(process.env.OPEN_ORDERS_ALERT_THRESHOLD)
+    : 1,
+  EMERGENCY_WALLET_PRIVATE_KEY: process.env.EMERGENCY_WALLET_PRIVATE_KEY,
+
 };
 
 const parsed = configSchema.safeParse(env);

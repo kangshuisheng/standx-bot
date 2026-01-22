@@ -3,6 +3,7 @@ import { StandXClient } from "./services/standx-api";
 import { MarketMakerStrategy } from "./strategies/market-maker";
 import { Logger } from "./utils/logger";
 import { Bot, InlineKeyboard } from "grammy";
+import { startSessionReminder } from "./services/session-reminder";
 
 const logger = new Logger();
 
@@ -29,6 +30,9 @@ let isRunning = false;
 let isExecuting = false; // 防止循环执行时被打断
 let intervalId: ReturnType<typeof setInterval> | null = null;
 let statusIntervalId: ReturnType<typeof setInterval> | null = null;
+let sessionReminderStop: (() => void) | null = null;
+let watchdogIntervalId: ReturnType<typeof setInterval> | null = null;
+let authPaused = false; // when true, bot is paused due to auth issues and will not place new orders
 let cycleCount = 0;
 let lastError: string | null = null;
 
@@ -152,6 +156,9 @@ async function cleanup() {
 
   logger.warn("🛑 Shutting down...");
   if (intervalId) clearInterval(intervalId);
+  if (statusIntervalId) clearInterval(statusIntervalId);
+  if (watchdogIntervalId) clearInterval(watchdogIntervalId);
+  if (sessionReminderStop) sessionReminderStop();
 
   try {
     await standXClient.cancelAllOrders(config.SYMBOL);
@@ -205,6 +212,72 @@ async function main() {
   } else {
     logger.warn("⚠️ Telegram Bot not configured. Running in standalone mode.");
   }
+
+  // Start session reminder if configured and a Telegram bot is available
+  if (bot && config.SESSION_REMINDER_DAYS) {
+    sessionReminderStop = startSessionReminder(sendTelegramMessage);
+    logger.info(`Session reminder started (every ${config.SESSION_REMINDER_CHECK_INTERVAL_MS}ms, threshold ${config.SESSION_REMINDER_DAYS} days).`);
+  }
+
+  // Prepare emergency client if provided
+  const emergencyClient = config.EMERGENCY_WALLET_PRIVATE_KEY
+    ? new StandXClient({
+        privateKey: config.EMERGENCY_WALLET_PRIVATE_KEY,
+        sessionPrivateKey: config.SESSION_PRIVATE_KEY,
+      })
+    : null;
+
+  // Pause the bot for manual intervention (token refresh) - does not attempt cancels when no emergency key
+  async function pauseForManualIntervention(errMsg: string) {
+    if (authPaused) return; // only notify once until manual restart
+    authPaused = true;
+    logger.error(errMsg);
+
+    await sendTelegramMessage(
+      `${errMsg}\n\n⚠️ The bot has been paused. Please refresh your ACCESS_TOKEN (or run the manual-login helper) and then restart the bot to resume.\nNote: Without a private key the bot cannot cancel existing orders automatically.`
+    );
+
+    // Stop scheduling new cycles
+    isRunning = false;
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+    if (statusIntervalId) {
+      clearInterval(statusIntervalId);
+      statusIntervalId = null;
+    }
+  }
+
+  // Start a watchdog to detect auth issues and either attempt emergency cancel (if key present) or pause + notify
+  const startWatchdog = () => {
+    watchdogIntervalId = setInterval(async () => {
+      try {
+        await standXClient.getOpenOrders(config.SYMBOL);
+      } catch (e: any) {
+        const msg = `⚠️ Authentication / API error detected: ${e.message || e}`;
+
+        if (emergencyClient) {
+          // Attempt emergency cancel with the provided emergency key
+          logger.error(msg + " - attempting emergency cancel with emergency key.");
+          await sendTelegramMessage(`${msg}\nAttempting emergency cancel with emergency key...`);
+          try {
+            await emergencyClient.cancelAllOrders(config.SYMBOL);
+            await sendTelegramMessage("✅ Emergency cancel completed with emergency key.");
+          } catch (err: any) {
+            await sendTelegramMessage(`❌ Emergency cancel failed: ${err.message || err}`);
+            // If emergency cancel failed, still pause and notify
+            await pauseForManualIntervention(msg);
+          }
+        } else {
+          // No emergency key: pause and notify user to refresh token
+          await pauseForManualIntervention(msg);
+        }
+      }
+    }, config.WATCHDOG_INTERVAL_MS || 60000);
+  };
+
+  startWatchdog();
 
   // 直接启动策略
   await startStrategy();
