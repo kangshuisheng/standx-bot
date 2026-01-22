@@ -32,6 +32,7 @@ let intervalId: ReturnType<typeof setInterval> | null = null;
 let statusIntervalId: ReturnType<typeof setInterval> | null = null;
 let sessionReminderStop: (() => void) | null = null;
 let watchdogIntervalId: ReturnType<typeof setInterval> | null = null;
+let healthIntervalId: ReturnType<typeof setInterval> | null = null;
 let authPaused = false; // when true, bot is paused due to auth issues and will not place new orders
 let cycleCount = 0;
 let lastError: string | null = null;
@@ -102,6 +103,17 @@ async function startStrategy() {
     }
   }, interval);
 
+  // Health loop: light-weight check at higher frequency (e.g., 5s), avoid running during execution or when auth paused
+  const healthIntervalMs = config.HEALTH_CHECK_INTERVAL_MS || 5000;
+  healthIntervalId = setInterval(async () => {
+    if (!isRunning || isExecuting || authPaused) return;
+    try {
+      await marketMakerStrategy.healthCheck();
+    } catch (e: any) {
+      logger.warn("Health check error:", e.message || e);
+    }
+  }, healthIntervalMs);
+
   await sendTelegramMessage("🟢 <b>机器人已启动！</b>\n\n正在挂单赚取积分...");
 }
 
@@ -158,6 +170,7 @@ async function cleanup() {
   if (intervalId) clearInterval(intervalId);
   if (statusIntervalId) clearInterval(statusIntervalId);
   if (watchdogIntervalId) clearInterval(watchdogIntervalId);
+  if (healthIntervalId) clearInterval(healthIntervalId);
   if (sessionReminderStop) sessionReminderStop();
 
   try {

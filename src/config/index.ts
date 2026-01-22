@@ -37,6 +37,13 @@ const configSchema = z.object({
   CANCEL_CONFIRM_MAX_CHECKS: z.number().default(10),
   CANCEL_CONFIRM_BASE_DELAY_MS: z.number().default(500),
 
+  // Health check loop: light-weight check (default every 5s) to quickly place a tiny fallback if both sides missing
+  HEALTH_CHECK_INTERVAL_MS: z.number().default(5000),
+  HEALTH_FALLBACK_NOTIONAL_USD: z.string().or(z.number()).default("10").transform((v) => new Decimal(v)),
+  HEALTH_FALLBACK_MIN_QTY: z.string().or(z.number()).default("0.001").transform((v) => new Decimal(v)),
+  HEALTH_FALLBACK_COOLDOWN_MS: z.number().default(60 * 1000), // 1 minute cooldown for health fallback
+  HEALTH_MIN_VOLATILITY_TO_ACT: z.number().optional(),
+
   // Tier offsets (relative to reference price)
   TIER1_OFFSET: z.string().or(z.number()).default("0.0009").transform((v) => new Decimal(v)), // 9 bps (edge for Tier1)
   TIER2_OFFSET: z.string().or(z.number()).default("0.0020").transform((v) => new Decimal(v)), // 20 bps (mid for Tier2)
@@ -92,6 +99,17 @@ const env = {
   CANCEL_CONFIRM_BASE_DELAY_MS: process.env.CANCEL_CONFIRM_BASE_DELAY_MS
     ? parseInt(process.env.CANCEL_CONFIRM_BASE_DELAY_MS)
     : 500,
+  HEALTH_CHECK_INTERVAL_MS: process.env.HEALTH_CHECK_INTERVAL_MS
+    ? parseInt(process.env.HEALTH_CHECK_INTERVAL_MS)
+    : 5000,
+  HEALTH_FALLBACK_NOTIONAL_USD: process.env.HEALTH_FALLBACK_NOTIONAL_USD || "10",
+  HEALTH_FALLBACK_MIN_QTY: process.env.HEALTH_FALLBACK_MIN_QTY || "0.001",
+  HEALTH_FALLBACK_COOLDOWN_MS: process.env.HEALTH_FALLBACK_COOLDOWN_MS
+    ? parseInt(process.env.HEALTH_FALLBACK_COOLDOWN_MS)
+    : 60 * 1000,
+  HEALTH_MIN_VOLATILITY_TO_ACT: process.env.HEALTH_MIN_VOLATILITY_TO_ACT
+    ? parseFloat(process.env.HEALTH_MIN_VOLATILITY_TO_ACT)
+    : undefined,
   CANCEL_RETRY_COUNT: process.env.CANCEL_RETRY_COUNT
     ? parseInt(process.env.CANCEL_RETRY_COUNT)
     : 3,

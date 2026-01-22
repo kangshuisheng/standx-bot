@@ -568,7 +568,73 @@ export class MarketMakerStrategy extends BaseStrategy {
       );
     }
   }
+  /**
+   * Health check: light-weight periodic check to ensure at least one bid+ask exists within 10 bps.
+   * If not and cooldown passed, place a small fallback pair (HEALTH_FALLBACK_NOTIONAL_USD) to maintain uptime.
+   */
+  public async healthCheck(): Promise<void> {
+    try {
+      // get current orders and prices
+      const [openOrders, marketPriceData] = await Promise.all([
+        this.client.getOpenOrders(this.tradingPair),
+        this.client.getSymbolPrice(this.tradingPair),
+      ]);
 
+      // determine reference price
+      let referencePrice: Decimal;
+      if (marketPriceData && marketPriceData.mark_price) {
+        referencePrice = new Decimal(marketPriceData.mark_price);
+      } else if (marketPriceData && marketPriceData.index_price) {
+        referencePrice = new Decimal(marketPriceData.index_price);
+      } else if (openOrders.length > 0) {
+        // fallback to mid of first two orders if available
+        const p0 = new Decimal(openOrders[0].price);
+        const p1 = openOrders[1] ? new Decimal(openOrders[1].price) : p0;
+        referencePrice = p0.plus(p1).dividedBy(2);
+      } else {
+        this.logger.warn("Health check: unable to determine reference price; skipping.");
+        return;
+      }
+
+      const within10bps = new Decimal("0.001");
+      const hasBid = openOrders.some((o: any) => o.side === "buy" && new Decimal(o.price).minus(referencePrice).abs().dividedBy(referencePrice).lessThanOrEqualTo(within10bps));
+      const hasAsk = openOrders.some((o: any) => o.side === "sell" && new Decimal(o.price).minus(referencePrice).abs().dividedBy(referencePrice).lessThanOrEqualTo(within10bps));
+
+      if (hasBid && hasAsk) {
+        // both present - nothing to do
+        return;
+      }
+
+      // cooldown logic
+      const now = Date.now();
+      const cooldown = config.HEALTH_FALLBACK_COOLDOWN_MS ?? 60000;
+      if (this.lastFallbackAt && now - this.lastFallbackAt < cooldown) {
+        this.logger.info(`Health fallback is on cooldown (${Math.ceil((cooldown - (now - this.lastFallbackAt))/1000)}s left).`);
+        return;
+      }
+
+      // place small fallback pair
+      const notional = new Decimal(config.HEALTH_FALLBACK_NOTIONAL_USD || "10");
+      const qty = notional.dividedBy(referencePrice).toDecimalPlaces(3, Decimal.ROUND_DOWN);
+      const minQty = new Decimal(config.HEALTH_FALLBACK_MIN_QTY || "0.001");
+      const placeQty = qty.lessThan(minQty) ? minQty : qty;
+
+      const fbOffset = new Decimal(config.TIER1_OFFSET);
+      const fbBuy = referencePrice.times(new Decimal(1).minus(fbOffset));
+      const fbSell = referencePrice.times(new Decimal(1).plus(fbOffset));
+
+      try {
+        this.logger.info(`Health fallback: placing small pair (${placeQty.toString()} BTC) at ${fbBuy.toFixed(2)}/${fbSell.toFixed(2)}.`);
+        await this.client.placeOrder(this.tradingPair, "buy", fbBuy, placeQty);
+        await this.client.placeOrder(this.tradingPair, "sell", fbSell, placeQty);
+        this.lastFallbackAt = now;
+      } catch (e: any) {
+        this.logger.warn(`Health fallback failed: ${e.message || e}`);
+      }
+    } catch (e: any) {
+      this.logger.warn(`Health check failed: ${e.message || e}`);
+    }
+  }
   public async calculatePrices(
     midPrice: Decimal,
   ): Promise<{ buyPrice: Decimal; sellPrice: Decimal }> {
