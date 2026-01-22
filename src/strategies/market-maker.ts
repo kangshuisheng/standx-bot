@@ -144,7 +144,12 @@ export class MarketMakerStrategy extends BaseStrategy {
         const buyPrice = midPrice.times(new Decimal(1).minus(offset));
         const sellPrice = midPrice.times(new Decimal(1).plus(offset));
         orders.push({ side: "buy", price: buyPrice, qty: actualQty, tier: 1 });
-        orders.push({ side: "sell", price: sellPrice, qty: actualQty, tier: 1 });
+        orders.push({
+          side: "sell",
+          price: sellPrice,
+          qty: actualQty,
+          tier: 1,
+        });
       }
 
       // Tier 2: single pair (mid)
@@ -153,7 +158,12 @@ export class MarketMakerStrategy extends BaseStrategy {
         const buyPrice = midPrice.times(new Decimal(1).minus(offset));
         const sellPrice = midPrice.times(new Decimal(1).plus(offset));
         orders.push({ side: "buy", price: buyPrice, qty: actualQty, tier: 2 });
-        orders.push({ side: "sell", price: sellPrice, qty: actualQty, tier: 2 });
+        orders.push({
+          side: "sell",
+          price: sellPrice,
+          qty: actualQty,
+          tier: 2,
+        });
       }
 
       // Tier 3: single pair (mid)
@@ -162,7 +172,12 @@ export class MarketMakerStrategy extends BaseStrategy {
         const buyPrice = midPrice.times(new Decimal(1).minus(offset));
         const sellPrice = midPrice.times(new Decimal(1).plus(offset));
         orders.push({ side: "buy", price: buyPrice, qty: actualQty, tier: 3 });
-        orders.push({ side: "sell", price: sellPrice, qty: actualQty, tier: 3 });
+        orders.push({
+          side: "sell",
+          price: sellPrice,
+          qty: actualQty,
+          tier: 3,
+        });
       }
 
       this.logger.info(
