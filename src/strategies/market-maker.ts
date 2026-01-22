@@ -107,21 +107,26 @@ export class MarketMakerStrategy extends BaseStrategy {
       // Tier 3: 30 bps-1% → 10% 积分 → 挂在 ~95 bps（接近边缘但仍在10%区）
 
       const MIN_QTY = new Decimal("0.001");
-      const totalOrders =
-        this.ordersTier1 + this.ordersTier2 + this.ordersTier3;
+      const pairsCount =
+        (this.ordersTier1 > 0 ? 1 : 0) +
+        (this.ordersTier2 > 0 ? 1 : 0) +
+        (this.ordersTier3 > 0 ? 1 : 0);
 
-      // 每个订单的数量（总量平分）
-      const qtyPerOrder = this.orderSize
+      if (pairsCount === 0) {
+        this.logger.warn("No tiers enabled, skipping cycle.");
+        return;
+      }
+
+      // 每对的数量（总量在启用的 pairs 之间均分）
+      const qtyPerSide = this.orderSize
         .dividedBy(midPrice)
-        .dividedBy(totalOrders)
+        .dividedBy(pairsCount)
         .toDecimalPlaces(3, Decimal.ROUND_DOWN);
 
-      const actualQty = qtyPerOrder.lessThan(MIN_QTY) ? MIN_QTY : qtyPerOrder;
+      const actualQty = qtyPerSide.lessThan(MIN_QTY) ? MIN_QTY : qtyPerSide;
 
       this.logger.info(
-        `Tier-based orders: T1=${this.ordersTier1}, T2=${
-          this.ordersTier2
-        }, T3=${this.ordersTier3}, ${actualQty} BTC per order (~${actualQty
+        `Pairs-enabled: ${pairsCount}. ${actualQty} BTC per side (~${actualQty
           .times(midPrice)
           .toFixed(2)} USD)`,
       );
@@ -133,101 +138,35 @@ export class MarketMakerStrategy extends BaseStrategy {
         tier: number;
       }> = [];
 
-      // Tier 1: 100% 积分区，在 7-9 bps 之间分散（最远但仍在 0-10 bps 内）
+      // Tier 1: single pair (edge)
       if (this.ordersTier1 > 0) {
-        const tier1Start = new Decimal("0.0007"); // 7 bps
-        const tier1End = new Decimal("0.0009"); // 9 bps
-        const tier1Step =
-          this.ordersTier1 > 1
-            ? tier1End.minus(tier1Start).dividedBy(this.ordersTier1 - 1)
-            : new Decimal(0);
-
-        for (let i = 0; i < this.ordersTier1; i++) {
-          const offset =
-            this.ordersTier1 > 1
-              ? tier1Start.plus(tier1Step.times(i))
-              : tier1End;
-          const buyPrice = midPrice.times(new Decimal(1).minus(offset));
-          const sellPrice = midPrice.times(new Decimal(1).plus(offset));
-          orders.push({
-            side: "buy",
-            price: buyPrice,
-            qty: actualQty,
-            tier: 1,
-          });
-          orders.push({
-            side: "sell",
-            price: sellPrice,
-            qty: actualQty,
-            tier: 1,
-          });
-        }
+        const offset = new Decimal("0.0009");
+        const buyPrice = midPrice.times(new Decimal(1).minus(offset));
+        const sellPrice = midPrice.times(new Decimal(1).plus(offset));
+        orders.push({ side: "buy", price: buyPrice, qty: actualQty, tier: 1 });
+        orders.push({ side: "sell", price: sellPrice, qty: actualQty, tier: 1 });
       }
 
-      // Tier 2: 50% 积分区，在 15-28 bps 之间分散
+      // Tier 2: single pair (mid)
       if (this.ordersTier2 > 0) {
-        const tier2Start = new Decimal("0.0015"); // 15 bps
-        const tier2End = new Decimal("0.0028"); // 28 bps
-        const tier2Step =
-          this.ordersTier2 > 1
-            ? tier2End.minus(tier2Start).dividedBy(this.ordersTier2 - 1)
-            : new Decimal(0);
-
-        for (let i = 0; i < this.ordersTier2; i++) {
-          const offset =
-            this.ordersTier2 > 1
-              ? tier2Start.plus(tier2Step.times(i))
-              : tier2End;
-          const buyPrice = midPrice.times(new Decimal(1).minus(offset));
-          const sellPrice = midPrice.times(new Decimal(1).plus(offset));
-          orders.push({
-            side: "buy",
-            price: buyPrice,
-            qty: actualQty,
-            tier: 2,
-          });
-          orders.push({
-            side: "sell",
-            price: sellPrice,
-            qty: actualQty,
-            tier: 2,
-          });
-        }
+        const offset = new Decimal("0.0020");
+        const buyPrice = midPrice.times(new Decimal(1).minus(offset));
+        const sellPrice = midPrice.times(new Decimal(1).plus(offset));
+        orders.push({ side: "buy", price: buyPrice, qty: actualQty, tier: 2 });
+        orders.push({ side: "sell", price: sellPrice, qty: actualQty, tier: 2 });
       }
 
-      // Tier 3: 10% 积分区，在 40-95 bps 之间分散
+      // Tier 3: single pair (mid)
       if (this.ordersTier3 > 0) {
-        const tier3Start = new Decimal("0.0040"); // 40 bps
-        const tier3End = new Decimal("0.0095"); // 95 bps
-        const tier3Step =
-          this.ordersTier3 > 1
-            ? tier3End.minus(tier3Start).dividedBy(this.ordersTier3 - 1)
-            : new Decimal(0);
-
-        for (let i = 0; i < this.ordersTier3; i++) {
-          const offset =
-            this.ordersTier3 > 1
-              ? tier3Start.plus(tier3Step.times(i))
-              : tier3End;
-          const buyPrice = midPrice.times(new Decimal(1).minus(offset));
-          const sellPrice = midPrice.times(new Decimal(1).plus(offset));
-          orders.push({
-            side: "buy",
-            price: buyPrice,
-            qty: actualQty,
-            tier: 3,
-          });
-          orders.push({
-            side: "sell",
-            price: sellPrice,
-            qty: actualQty,
-            tier: 3,
-          });
-        }
+        const offset = new Decimal("0.0060");
+        const buyPrice = midPrice.times(new Decimal(1).minus(offset));
+        const sellPrice = midPrice.times(new Decimal(1).plus(offset));
+        orders.push({ side: "buy", price: buyPrice, qty: actualQty, tier: 3 });
+        orders.push({ side: "sell", price: sellPrice, qty: actualQty, tier: 3 });
       }
 
       this.logger.info(
-        `Placing ${orders.length} orders across 3 point tiers (100%/50%/10%)`,
+        `Placing ${orders.length} orders across ${pairsCount} tiers (one pair each)`,
       );
 
       // 5. 并发下单
