@@ -2,6 +2,7 @@ import { BaseStrategy } from "./base-strategy";
 import Decimal from "decimal.js";
 import { StandXClient } from "../services/standx-api";
 import { Logger } from "../utils/logger";
+import { config } from "../config";
 
 export class MarketMakerStrategy extends BaseStrategy {
   private client: StandXClient;
@@ -140,9 +141,10 @@ export class MarketMakerStrategy extends BaseStrategy {
 
       // Tier 1: single pair (edge)
       if (this.ordersTier1 > 0) {
-        const offset = new Decimal("0.0009");
+        const offset = new Decimal(config.TIER1_OFFSET_EDGE || "0.001");
         const buyPrice = midPrice.times(new Decimal(1).minus(offset));
         const sellPrice = midPrice.times(new Decimal(1).plus(offset));
+        this.logger.info(`Tier1 edge offset used: ${offset.toString()}`);
         orders.push({ side: "buy", price: buyPrice, qty: actualQty, tier: 1 });
         orders.push({
           side: "sell",
@@ -152,11 +154,12 @@ export class MarketMakerStrategy extends BaseStrategy {
         });
       }
 
-      // Tier 2: single pair (mid)
+      // Tier 2: single pair (edge)
       if (this.ordersTier2 > 0) {
-        const offset = new Decimal("0.0020");
+        const offset = new Decimal(config.TIER2_OFFSET_EDGE || "0.003");
         const buyPrice = midPrice.times(new Decimal(1).minus(offset));
         const sellPrice = midPrice.times(new Decimal(1).plus(offset));
+        this.logger.info(`Tier2 edge offset used: ${offset.toString()}`);
         orders.push({ side: "buy", price: buyPrice, qty: actualQty, tier: 2 });
         orders.push({
           side: "sell",
@@ -166,11 +169,12 @@ export class MarketMakerStrategy extends BaseStrategy {
         });
       }
 
-      // Tier 3: single pair (mid)
+      // Tier 3: single pair (edge)
       if (this.ordersTier3 > 0) {
-        const offset = new Decimal("0.0060");
+        const offset = new Decimal(config.TIER3_OFFSET_EDGE || "0.01");
         const buyPrice = midPrice.times(new Decimal(1).minus(offset));
         const sellPrice = midPrice.times(new Decimal(1).plus(offset));
+        this.logger.info(`Tier3 edge offset used: ${offset.toString()}`);
         orders.push({ side: "buy", price: buyPrice, qty: actualQty, tier: 3 });
         orders.push({
           side: "sell",

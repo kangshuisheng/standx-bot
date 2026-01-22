@@ -27,9 +27,15 @@ const configSchema = z.object({
   // 30bps-1% (0.3%-1%): 10% 积分
   // 每个档位默认挂1对订单（买+卖），放在档位边缘避免成交
   ORDERS_TIER1: z.number().default(1), // 在 100% 积分区挂单数（每侧）- 最近，保守
-  ORDERS_TIER2: z.number().default(3), // 在 50% 积分区挂单数（每侧）- 较安全，多挂
-  ORDERS_TIER3: z.number().default(3), // 在 10% 积分区挂单数（每侧）- 最安全，多挂
+  ORDERS_TIER2: z.number().default(1), // 在 50% 积分区挂单数（每侧）- 单对
+  ORDERS_TIER3: z.number().default(1), // 在 10% 积分区挂单数（每侧）- 单对
   EXECUTION_INTERVAL: z.number().default(5000),
+
+  // Tier EDGE offsets: place orders at the edge of each tier (still within band) to maximize points while being less likely to be taken
+  TIER1_OFFSET_EDGE: z.string().or(z.number()).default("0.001").transform((v) => new Decimal(v)), // 10 bps (edge)
+  TIER2_OFFSET_EDGE: z.string().or(z.number()).default("0.003").transform((v) => new Decimal(v)), // 30 bps (edge)
+  TIER3_OFFSET_EDGE: z.string().or(z.number()).default("0.01").transform((v) => new Decimal(v)), // 100 bps (edge)
+
 });
 
 // 加载环境变量
@@ -50,13 +56,17 @@ const env = {
     : 1,
   ORDERS_TIER2: process.env.ORDERS_TIER2
     ? parseInt(process.env.ORDERS_TIER2)
-    : 3,
+    : 1,
   ORDERS_TIER3: process.env.ORDERS_TIER3
     ? parseInt(process.env.ORDERS_TIER3)
-    : 3,
+    : 1,
   EXECUTION_INTERVAL: process.env.EXECUTION_INTERVAL
     ? parseInt(process.env.EXECUTION_INTERVAL)
     : 5000,
+  TIER1_OFFSET_EDGE: process.env.TIER1_OFFSET_EDGE || "0.001",
+  TIER2_OFFSET_EDGE: process.env.TIER2_OFFSET_EDGE || "0.003",
+  TIER3_OFFSET_EDGE: process.env.TIER3_OFFSET_EDGE || "0.01",
+
 };
 
 const parsed = configSchema.safeParse(env);
