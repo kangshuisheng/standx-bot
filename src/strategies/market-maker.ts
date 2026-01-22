@@ -2,6 +2,7 @@ import { BaseStrategy } from "./base-strategy";
 import Decimal from "decimal.js";
 import { StandXClient } from "../services/standx-api";
 import { Logger } from "../utils/logger";
+import { config } from "../config";
 
 export class MarketMakerStrategy extends BaseStrategy {
   private client: StandXClient;
@@ -152,7 +153,7 @@ export class MarketMakerStrategy extends BaseStrategy {
       const desiredPairs: PairSpec[] = [];
 
       if (this.ordersTier1 > 0) {
-        const offset = new Decimal("0.0009"); // 9 bps (edge for Tier1)
+        const offset = new Decimal(config.TIER1_OFFSET);
         desiredPairs.push({
           tier: 1,
           buyPrice: referencePrice.times(new Decimal(1).minus(offset)),
@@ -161,7 +162,7 @@ export class MarketMakerStrategy extends BaseStrategy {
       }
 
       if (this.ordersTier2 > 0) {
-        const offset = new Decimal("0.0028"); // 28 bps (edge for Tier2)
+        const offset = new Decimal(config.TIER2_OFFSET);
         desiredPairs.push({
           tier: 2,
           buyPrice: referencePrice.times(new Decimal(1).minus(offset)),
@@ -170,12 +171,47 @@ export class MarketMakerStrategy extends BaseStrategy {
       }
 
       if (this.ordersTier3 > 0) {
-        const offset = new Decimal("0.0095"); // 95 bps (edge for Tier3)
+        const offset = new Decimal(config.TIER3_OFFSET);
         desiredPairs.push({
           tier: 3,
           buyPrice: referencePrice.times(new Decimal(1).minus(offset)),
           sellPrice: referencePrice.times(new Decimal(1).plus(offset)),
         });
+      }
+
+      // Ensure price uniqueness (avoid placing two very close orders after rounding)
+      const minTick = new Decimal(config.MIN_PRICE_TICK_USD?.toString() || "0.01"); // minimum price step (USD cents)
+      const seenBuyPrices = new Set<string>();
+      const seenSellPrices = new Set<string>();
+
+      for (const dp of desiredPairs) {
+        // Adjust buy price downwards until unique (prefer tighter / higher buys)
+        let buy = dp.buyPrice;
+        let buyRounded = buy.toFixed(2);
+        while (seenBuyPrices.has(buyRounded)) {
+          buy = buy.minus(minTick);
+          buyRounded = buy.toFixed(2);
+        }
+        seenBuyPrices.add(buyRounded);
+        dp.buyPrice = buy;
+
+        // Adjust sell price upwards until unique (prefer tighter / lower sells)
+        let sell = dp.sellPrice;
+        let sellRounded = sell.toFixed(2);
+        while (seenSellPrices.has(sellRounded)) {
+          sell = sell.plus(minTick);
+          sellRounded = sell.toFixed(2);
+        }
+        seenSellPrices.add(sellRounded);
+        dp.sellPrice = sell;
+
+        // Ensure buy < sell with at least one minTick gap
+        if (dp.buyPrice.greaterThanOrEqualTo(dp.sellPrice)) {
+          dp.sellPrice = dp.buyPrice.plus(minTick);
+          this.logger.warn(
+            `Adjusted pair for tier ${dp.tier} to avoid crossing: buy=${dp.buyPrice.toFixed(2)} sell=${dp.sellPrice.toFixed(2)}`
+          );
+        }
       }
 
       // Reconcile existing orders: keep matching ones (within threshold) and cancel the rest
@@ -257,7 +293,7 @@ export class MarketMakerStrategy extends BaseStrategy {
 
       if (!hasBidWithin10bps || !hasAskWithin10bps) {
         this.logger.warn("No both-sides pair within 10 bps detected; placing a fallback tight pair.");
-        const fbOffset = new Decimal("0.0009");
+        const fbOffset = new Decimal(config.TIER1_OFFSET);
         const fbBuy = referencePrice.times(new Decimal(1).minus(fbOffset));
         const fbSell = referencePrice.times(new Decimal(1).plus(fbOffset));
         try {

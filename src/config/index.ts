@@ -30,7 +30,13 @@ const configSchema = z.object({
   ORDERS_TIER2: z.number().default(1), // 在 50% 积分区挂单数（每侧）- 改为 1 单
   ORDERS_TIER3: z.number().default(1), // 在 10% 积分区挂单数（每侧）- 改为 1 单
   EXECUTION_INTERVAL: z.number().default(5000),
-  
+
+  // Tier offsets (relative to reference price)
+  TIER1_OFFSET: z.string().or(z.number()).default("0.0009").transform((v) => new Decimal(v)), // 9 bps (edge for Tier1)
+  TIER2_OFFSET: z.string().or(z.number()).default("0.0020").transform((v) => new Decimal(v)), // 20 bps (mid for Tier2)
+  TIER3_OFFSET: z.string().or(z.number()).default("0.0060").transform((v) => new Decimal(v)), // 60 bps (mid for Tier3)
+  MIN_PRICE_TICK_USD: z.string().or(z.number()).default("0.01").transform((v) => new Decimal(v)),
+
   // Retry / watchdog / reminder configs
   CANCEL_RETRY_COUNT: z.number().default(3),
   CANCEL_RETRY_BACKOFF_MS: z.number().default(500),
@@ -91,6 +97,12 @@ const env = {
     ? parseInt(process.env.OPEN_ORDERS_ALERT_THRESHOLD)
     : 1,
   EMERGENCY_WALLET_PRIVATE_KEY: process.env.EMERGENCY_WALLET_PRIVATE_KEY,
+
+  // Tier offsets (string to preserve precision)
+  TIER1_OFFSET: process.env.TIER1_OFFSET || "0.0009",
+  TIER2_OFFSET: process.env.TIER2_OFFSET || "0.0020",
+  TIER3_OFFSET: process.env.TIER3_OFFSET || "0.0060",
+  MIN_PRICE_TICK_USD: process.env.MIN_PRICE_TICK_USD || "0.01",
 
 };
 
