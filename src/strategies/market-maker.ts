@@ -189,28 +189,31 @@ export class MarketMakerStrategy extends BaseStrategy {
       const minTick = new Decimal(
         config.MIN_PRICE_TICK_USD?.toString() || "0.01",
       ); // minimum price step (USD cents)
-      const seenBuyPrices = new Set<string>();
-      const seenSellPrices = new Set<string>();
+      const seenBuyPrices: Decimal[] = [];
+      const seenSellPrices: Decimal[] = [];
+
+      const isTooCloseToList = (price: Decimal, list: Decimal[]) => {
+        for (const p of list) {
+          if (p.minus(price).abs().lessThanOrEqualTo(minTick)) return true;
+        }
+        return false;
+      };
 
       for (const dp of desiredPairs) {
         // Adjust buy price downwards until unique (prefer tighter / higher buys)
         let buy = dp.buyPrice;
-        let buyRounded = buy.toFixed(2);
-        while (seenBuyPrices.has(buyRounded)) {
+        while (isTooCloseToList(buy, seenBuyPrices)) {
           buy = buy.minus(minTick);
-          buyRounded = buy.toFixed(2);
         }
-        seenBuyPrices.add(buyRounded);
+        seenBuyPrices.push(buy);
         dp.buyPrice = buy;
 
         // Adjust sell price upwards until unique (prefer tighter / lower sells)
         let sell = dp.sellPrice;
-        let sellRounded = sell.toFixed(2);
-        while (seenSellPrices.has(sellRounded)) {
+        while (isTooCloseToList(sell, seenSellPrices)) {
           sell = sell.plus(minTick);
-          sellRounded = sell.toFixed(2);
         }
-        seenSellPrices.add(sellRounded);
+        seenSellPrices.push(sell);
         dp.sellPrice = sell;
 
         // Ensure buy < sell with at least one minTick gap
@@ -413,7 +416,7 @@ export class MarketMakerStrategy extends BaseStrategy {
         // Adjust if buy is blocked or too close to a blocked price
         let buy = dp.buyPrice;
         if (!occ.buy) {
-          while (isBlockedNearby(buy) || seenBuyPrices.has(buy.toFixed(2))) {
+          while (isBlockedNearby(buy) || isTooCloseToList(buy, seenBuyPrices)) {
             buy = buy.minus(minTick);
           }
         }
@@ -423,7 +426,7 @@ export class MarketMakerStrategy extends BaseStrategy {
         // Adjust if sell is blocked or too close to a blocked price
         let sell = dp.sellPrice;
         if (!occ.sell) {
-          while (isBlockedNearby(sell) || seenSellPrices.has(sell.toFixed(2))) {
+          while (isBlockedNearby(sell) || isTooCloseToList(sell, seenSellPrices)) {
             sell = sell.plus(minTick);
           }
         }
@@ -450,10 +453,10 @@ export class MarketMakerStrategy extends BaseStrategy {
               `Skipping BUY for tier ${dp.tier} because existing order ${nearby.id} @ ${nearby.price} is within ${minTick} of planned ${dp.buyPrice.toFixed(2)}`,
             );
             // mark price as seen so other pairs don't pick the same
-            seenBuyPrices.add(nearby.price.toString());
+            seenBuyPrices.push(new Decimal(nearby.price));
           } else {
             // Reserve the rounded prices to avoid collisions with later pairs in this cycle
-            seenBuyPrices.add(dp.buyPrice.toFixed(2));
+            seenBuyPrices.push(dp.buyPrice);
             this.logger.info(
               `Placing BUY for tier ${dp.tier} -> ${dp.buyPrice.toFixed(2)}`,
             );
@@ -474,9 +477,9 @@ export class MarketMakerStrategy extends BaseStrategy {
             this.logger.info(
               `Skipping SELL for tier ${dp.tier} because existing order ${nearbyS.id} @ ${nearbyS.price} is within ${minTick} of planned ${dp.sellPrice.toFixed(2)}`,
             );
-            seenSellPrices.add(nearbyS.price.toString());
+            seenSellPrices.push(new Decimal(nearbyS.price));
           } else {
-            seenSellPrices.add(dp.sellPrice.toFixed(2));
+            seenSellPrices.push(dp.sellPrice);
             this.logger.info(
               `Placing SELL for tier ${dp.tier} -> ${dp.sellPrice.toFixed(2)}`,
             );
