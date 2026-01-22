@@ -11,6 +11,10 @@ export class MarketMakerStrategy extends BaseStrategy {
   private ordersTier2: number; // 10-30 bps (50% 积分)
   private ordersTier3: number; // 30 bps-1% (10% 积分)
 
+  // Fallback counters to avoid immediate repeated fallback placements
+  private missingBothSidesCount: number = 0;
+  private lastFallbackAt: number = 0; // timestamp ms of last fallback placement
+
   constructor(
     client: StandXClient,
     tradingPair: string,
@@ -223,6 +227,7 @@ export class MarketMakerStrategy extends BaseStrategy {
       const matched = new Set<number>(); // indexes into desiredPairs that are satisfied
 
       const blockedPrices = new Set<string>();
+      const attemptedCancels: number[] = [];
 
       for (const o of openOrders) {
         const openPrice = new Decimal(o.price);
@@ -275,6 +280,45 @@ export class MarketMakerStrategy extends BaseStrategy {
             `Failed to cancel order ${o.id}: ${e.message || e}. Price ${rounded} will be blocked.`,
           );
         }
+      }
+
+      // Wait briefly for cancellations to propagate and confirm state (avoid racing to re-place)
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const maxCheck = config.CANCEL_CONFIRM_MAX_CHECKS ?? 10;
+      const baseDelay = config.CANCEL_CONFIRM_BASE_DELAY_MS ?? 500;
+      for (let attempt = 0; attempt < maxCheck; attempt++) {
+        try {
+          const current = await this.client.getOpenOrders(this.tradingPair);
+          const remaining = attemptedCancels.filter((id) => current.some((o: any) => o.id === id));
+          if (remaining.length === 0) {
+            openOrders = current; // settled
+            break;
+          }
+          const delay = baseDelay + attempt * 200;
+          this.logger.info(`Waiting for cancellations to settle; remaining: ${remaining.length}. Retrying in ${delay}ms (attempt ${attempt + 1}/${maxCheck})`);
+          await sleep(delay);
+        } catch (e: any) {
+          this.logger.warn(`Error while confirming cancellations: ${e.message || e}`);
+          await sleep(baseDelay);
+        }
+      }
+
+      // Re-read open orders and mark any remaining cancel targets as blocked
+      try {
+        const nowOpen = await this.client.getOpenOrders(this.tradingPair);
+        for (const id of attemptedCancels) {
+          if (nowOpen.some((o: any) => o.id === id)) {
+            const o = nowOpen.find((x: any) => x.id === id);
+            if (o) {
+              const rounded = new Decimal(o.price).toFixed(2);
+              blockedPrices.add(rounded);
+              this.logger.warn(`Order ${id} still present after cancel attempts. Blocking price ${rounded}`);
+            }
+          }
+        }
+        openOrders = nowOpen;
+      } catch (e) {
+        this.logger.warn("Failed to re-read open orders after cancellation attempts.");
       }
 
       // Before placing missing pairs, ensure planned prices don't sit next to blocked prices (±minTick)
@@ -483,31 +527,38 @@ export class MarketMakerStrategy extends BaseStrategy {
       );
 
       if (!hasBidWithin10bps || !hasAskWithin10bps) {
-        this.logger.warn(
-          "No both-sides pair within 10 bps detected; placing a fallback tight pair.",
-        );
-        const fbOffset = new Decimal(config.TIER1_OFFSET);
-        const fbBuy = referencePrice.times(new Decimal(1).minus(fbOffset));
-        const fbSell = referencePrice.times(new Decimal(1).plus(fbOffset));
-        try {
-          await this.client.placeOrder(
-            this.tradingPair,
-            "buy",
-            fbBuy,
-            actualQty,
-          );
-          await this.client.placeOrder(
-            this.tradingPair,
-            "sell",
-            fbSell,
-            actualQty,
-          );
-        } catch (e: any) {
-          this.logger.error("Failed to place fallback pair:", e);
-        }
-      }
+        // Increment missing counter and only place fallback after consecutive misses
+        this.missingBothSidesCount++;
+        const threshold = config.FALLBACK_CONSECUTIVE_CYCLES ?? 2;
+        const cooldown = config.FALLBACK_COOLDOWN_MS ?? 3 * 60 * 1000;
+        const now = Date.now();
 
-      this.logger.info("✅ Strategy cycle completed.");
+        if (this.missingBothSidesCount >= threshold) {
+          if (!this.lastFallbackAt || now - this.lastFallbackAt > cooldown) {
+            this.logger.warn(`Both-sides missing for ${this.missingBothSidesCount} cycles (threshold ${threshold}). Placing fallback pair.`);
+            const fbOffset = new Decimal(config.TIER1_OFFSET);
+            const fbBuy = referencePrice.times(new Decimal(1).minus(fbOffset));
+            const fbSell = referencePrice.times(new Decimal(1).plus(fbOffset));
+            try {
+              await this.client.placeOrder(this.tradingPair, "buy", fbBuy, actualQty);
+              await this.client.placeOrder(this.tradingPair, "sell", fbSell, actualQty);
+              this.lastFallbackAt = now;
+              this.missingBothSidesCount = 0; // reset after placing
+            } catch (e: any) {
+              this.logger.error("Failed to place fallback pair:", e);
+            }
+          } else {
+            const remainingMs = cooldown - (now - this.lastFallbackAt);
+            this.logger.info(`Fallback on cooldown. Next eligible in ${Math.ceil(remainingMs / 1000)}s.`);
+          }
+        } else {
+          this.logger.info(`both-sides missing (count=${this.missingBothSidesCount}/${threshold}). Will place fallback after threshold reached.`);
+        }
+      } else {
+        // Both sides present - reset counter
+        if (this.missingBothSidesCount > 0) this.logger.info("Both-sides restored; resetting missingBothSidesCount.");
+        this.missingBothSidesCount = 0;
+      }
 
       this.logger.info("✅ Strategy cycle completed.");
     } catch (e: any) {

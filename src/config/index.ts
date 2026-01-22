@@ -29,7 +29,13 @@ const configSchema = z.object({
   ORDERS_TIER1: z.number().default(1), // 在 100% 积分区挂单数（每侧）- 最近，保守
   ORDERS_TIER2: z.number().default(1), // 在 50% 积分区挂单数（每侧）- 改为 1 单
   ORDERS_TIER3: z.number().default(1), // 在 10% 积分区挂单数（每侧）- 改为 1 单
-  EXECUTION_INTERVAL: z.number().default(5000),
+  EXECUTION_INTERVAL: z.number().default(30000),
+
+  // Fallback & cancel confirmation behavior
+  FALLBACK_CONSECUTIVE_CYCLES: z.number().default(2),
+  FALLBACK_COOLDOWN_MS: z.number().default(3 * 60 * 1000), // 3 minutes
+  CANCEL_CONFIRM_MAX_CHECKS: z.number().default(10),
+  CANCEL_CONFIRM_BASE_DELAY_MS: z.number().default(500),
 
   // Tier offsets (relative to reference price)
   TIER1_OFFSET: z.string().or(z.number()).default("0.0009").transform((v) => new Decimal(v)), // 9 bps (edge for Tier1)
@@ -67,13 +73,25 @@ const env = {
     : 1,
   ORDERS_TIER2: process.env.ORDERS_TIER2
     ? parseInt(process.env.ORDERS_TIER2)
-    : 3,
+    : 1,
   ORDERS_TIER3: process.env.ORDERS_TIER3
     ? parseInt(process.env.ORDERS_TIER3)
-    : 3,
+    : 1,
   EXECUTION_INTERVAL: process.env.EXECUTION_INTERVAL
     ? parseInt(process.env.EXECUTION_INTERVAL)
-    : 5000,
+    : 30000,
+  FALLBACK_CONSECUTIVE_CYCLES: process.env.FALLBACK_CONSECUTIVE_CYCLES
+    ? parseInt(process.env.FALLBACK_CONSECUTIVE_CYCLES)
+    : 2,
+  FALLBACK_COOLDOWN_MS: process.env.FALLBACK_COOLDOWN_MS
+    ? parseInt(process.env.FALLBACK_COOLDOWN_MS)
+    : 3 * 60 * 1000,
+  CANCEL_CONFIRM_MAX_CHECKS: process.env.CANCEL_CONFIRM_MAX_CHECKS
+    ? parseInt(process.env.CANCEL_CONFIRM_MAX_CHECKS)
+    : 10,
+  CANCEL_CONFIRM_BASE_DELAY_MS: process.env.CANCEL_CONFIRM_BASE_DELAY_MS
+    ? parseInt(process.env.CANCEL_CONFIRM_BASE_DELAY_MS)
+    : 500,
   CANCEL_RETRY_COUNT: process.env.CANCEL_RETRY_COUNT
     ? parseInt(process.env.CANCEL_RETRY_COUNT)
     : 3,
