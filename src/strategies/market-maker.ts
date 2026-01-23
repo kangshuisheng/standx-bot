@@ -16,9 +16,9 @@ export class MarketMakerStrategy extends BaseStrategy {
     spread: Decimal,
     orderSize: Decimal,
     maxPosition: Decimal,
-    ordersTier1: number = 3,
-    ordersTier2: number = 2,
-    ordersTier3: number = 1
+    ordersTier1: number = 1,
+    ordersTier2: number = 1,
+    ordersTier3: number = 1,
   ) {
     super(tradingPair, spread, orderSize, maxPosition);
     this.client = client;
@@ -30,7 +30,7 @@ export class MarketMakerStrategy extends BaseStrategy {
 
   public async initialize(): Promise<void> {
     this.logger.info(
-      `Initializing Market Maker Strategy for ${this.tradingPair}...`
+      `Initializing Market Maker Strategy for ${this.tradingPair}...`,
     );
   }
 
@@ -60,7 +60,7 @@ export class MarketMakerStrategy extends BaseStrategy {
       const midPrice = bestBid.plus(bestAsk).dividedBy(2);
 
       this.logger.info(
-        `Market: ${midPrice.toFixed(2)} (Bid: ${bestBid}, Ask: ${bestAsk})`
+        `Market: ${midPrice.toFixed(2)} (Bid: ${bestBid}, Ask: ${bestAsk})`,
       );
 
       // 3. Get Current Position - 检查是否有持仓
@@ -69,31 +69,31 @@ export class MarketMakerStrategy extends BaseStrategy {
       // ⚠️ 关键安全逻辑：如果有持仓，先平掉！
       if (!currentPos.isZero()) {
         this.logger.warn(
-          `⚠️ DETECTED POSITION: ${currentPos} BTC - Attempting to close!`
+          `⚠️ DETECTED POSITION: ${currentPos} BTC - Attempting to close!`,
         );
 
         const absPos = currentPos.abs();
         if (currentPos.greaterThan(0)) {
           // 有多仓，挂卖单平仓（以 bestBid 价格快速成交）
           this.logger.info(
-            `Closing LONG position: Selling ${absPos} BTC at ${bestBid}`
+            `Closing LONG position: Selling ${absPos} BTC at ${bestBid}`,
           );
           await this.client.placeOrder(
             this.tradingPair,
             "sell",
             bestBid,
-            absPos
+            absPos,
           );
         } else {
           // 有空仓，挂买单平仓（以 bestAsk 价格快速成交）
           this.logger.info(
-            `Closing SHORT position: Buying ${absPos} BTC at ${bestAsk}`
+            `Closing SHORT position: Buying ${absPos} BTC at ${bestAsk}`,
           );
           await this.client.placeOrder(
             this.tradingPair,
             "buy",
             bestAsk,
-            absPos
+            absPos,
           );
         }
 
@@ -123,7 +123,7 @@ export class MarketMakerStrategy extends BaseStrategy {
           this.ordersTier2
         }, T3=${this.ordersTier3}, ${actualQty} BTC per order (~${actualQty
           .times(midPrice)
-          .toFixed(2)} USD)`
+          .toFixed(2)} USD)`,
       );
 
       const orders: Array<{
@@ -227,12 +227,12 @@ export class MarketMakerStrategy extends BaseStrategy {
       }
 
       this.logger.info(
-        `Placing ${orders.length} orders across 3 point tiers (100%/50%/10%)`
+        `Placing ${orders.length} orders across 3 point tiers (100%/50%/10%)`,
       );
 
       // 5. 并发下单
       const orderPromises = orders.map((o) =>
-        this.client.placeOrder(this.tradingPair, o.side, o.price, o.qty)
+        this.client.placeOrder(this.tradingPair, o.side, o.price, o.qty),
       );
 
       await Promise.all(orderPromises);
@@ -241,13 +241,13 @@ export class MarketMakerStrategy extends BaseStrategy {
     } catch (e: any) {
       this.logger.error(
         `Strategy cycle failed: ${e.message}`,
-        e.response?.data
+        e.response?.data,
       );
     }
   }
 
   public async calculatePrices(
-    midPrice: Decimal
+    midPrice: Decimal,
   ): Promise<{ buyPrice: Decimal; sellPrice: Decimal }> {
     const halfSpread = this.spread.dividedBy(2);
     // Target Bid = Mid * (1 - halfSpread)
